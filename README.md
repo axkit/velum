@@ -1,2 +1,2 @@
-# strup
-A struct parser package
+# Velum
+PosrtgresSQL micro ORM
