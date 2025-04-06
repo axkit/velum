@@ -1,28 +1,5 @@
 package reflectx
 
-type Index [8]int
-
-const LengthPos = 7
-
-func (idx *Index) Add(vals ...int) {
-	for _, v := range vals {
-		idx[idx[LengthPos]] = v
-		idx[LengthPos]++
-	}
-}
-
-func (idx *Index) Len() int {
-	return idx[LengthPos]
-}
-
-func (idx *Index) Value(dest []int) {
-	copy(dest, idx[:len(dest)])
-}
-
-func (idx *Index) Empty() bool {
-	return idx[LengthPos] == 0
-}
-
 // FieldIndexContainer is a container for field indexes.
 // [0] - cap
 // [1] - len
@@ -75,56 +52,10 @@ func (fic *FieldIndexContainer) Add(fieldPath []int) {
 	s[offset+1] = uint16(to)
 }
 
-func (f FieldIndexContainer) Range(fn func(fieldIndex []uint16)) {
-	pos := int(f[lenPos])
-	for i := 0; i < pos; i += 2 {
-		offset := 2 + i
-		from := f[offset]
-		to := f[offset+1]
-		fn(f[from:to])
-	}
-}
-
-func (f FieldIndexContainer) RangeByOne(fn func(i int, fieldIndex int)) {
-	pos := f[lenPos]
-	for i := 2; i < int(pos+2); i += 2 {
-		// from := f[i]
-		// to := f[i+1]
-		if f[i]+1 == f[i+1] {
-			fn(i, int(f[i]))
-			continue
-		}
-		for j := f[i]; j < f[i+1]; j++ {
-			fn(i, int(f[j]))
-		}
-	}
-}
-
-func (f FieldIndexContainer) RangeByPos(fieldPos []int, fn func(fieldIndex int)) {
-	for _, fp := range fieldPos {
-
-		from, to := f.fieldIndex(fp)
-
-		if x := f[from] + 1; x == f[to+1] {
-			fn(int(f[x]))
-			continue
-		}
-		for j := f[from]; j < f[to+1]; j++ {
-			fn(int(f[j]))
-		}
-	}
-}
-
-func (f FieldIndexContainer) RangeByPosX(columnPos []int, fn func(fieldPath []uint16)) {
+func (f FieldIndexContainer) RangeByFieldPath(columnPos []int, fn func(fieldPath []uint16)) {
 	for _, fp := range columnPos {
-
 		from, to := f.fieldIndex(fp)
 		fn(f[from:to])
-		// 	continue
-		// }
-		// for j := f[from]; j < f[to+1]; j++ {
-		// 	fn(int(f[j]))
-		// }
 	}
 }
 

@@ -2,25 +2,35 @@ package reflectx
 
 import (
 	"reflect"
-	"strings"
 )
 
+// StructField represents a field in a struct.
 type StructField struct {
+	// Path is the path to the field in the struct hierarchy.
+	// It is represented as a slice of integers, where each integer is the index
+	// of the field in the parent struct.
 	Path []int
+	// Name is the name of the field.
 	Name string
-	Tag  string
+	// Tag is the value of the struct tag.
+	Tag string
 }
 
+// ExtractStructFields extracts fields from a struct or a pointer to a struct.
+//
+// It returns a slice of StructField, which contains the field name, tag value,
+// and the path to the field in the struct hierarchy.
+// The tag parameter specifies the struct tag to look for.
+// The function panics if the input is not a struct or a pointer to a struct.
+// The function does not include unexported fields and fields with a tag value of "-".
+// It also handles embedded structs and nested structs.
+// The path is represented as a slice of integers, where each integer is the index
+// of the field in the parent struct.
 func ExtractStructFields(ptrToStruct any, tag string) []StructField {
 
-	t := reflect.TypeOf(ptrToStruct)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem() // dereference pointer
-	}
-
-	if t.Kind() != reflect.Struct {
-		panic("parseStruct: input must be a struct or a pointer to a struct")
-	}
+	MustBeStruct(ptrToStruct)
+	v := reflect.ValueOf(ptrToStruct)
+	t := v.Type()
 
 	return extractStructFields(t, tag, nil)
 }
@@ -32,59 +42,49 @@ func extractStructFields(t reflect.Type, tag string, parent *StructField) (field
 	}
 
 	for i := range t.NumField() {
-		sf := t.Field(i) // struct field
+		field := t.Field(i) // struct field
 
-		if !sf.IsExported() {
+		if !field.IsExported() {
 			continue
 		}
 
-		f := StructField{
-			Name: sf.Name,
-			Tag:  sf.Tag.Get(tag),
+		sf := StructField{
+			Name: field.Name,
+			Tag:  field.Tag.Get(tag),
 		}
 
-		if f.Tag == "-" {
+		if sf.Tag == "-" {
 			continue
 		}
 
 		if parent != nil {
-			f.Path = append(f.Path, parent.Path...)
+			sf.Path = append(sf.Path, parent.Path...)
 		}
-		f.Path = append(f.Path, i)
+		sf.Path = append(sf.Path, i)
 
-		if sf.Anonymous { // embedded struct
-			embeddedFields := extractStructFields(sf.Type, tag, &f)
+		if field.Anonymous { // embedded struct
+			embeddedFields := extractStructFields(field.Type, tag, &sf)
 			fields = append(fields, embeddedFields...)
 		} else {
-			fields = append(fields, f)
+			fields = append(fields, sf)
 		}
 	}
 	return fields
 }
 
-func FieldAddress(ptrToStruct any, fieldPaths [][]int, dst []any) {
-	v := reflect.ValueOf(ptrToStruct)
-	dst = dst[:len(fieldPaths)]
-	for i, path := range fieldPaths {
-		v = v.FieldByIndex(path)
-		dst[i] = v.Addr().Interface()
+// MustBeStruct panics if the given value is a struct or a pointer to a struct.
+func MustBeStruct(s any) {
+	v := reflect.ValueOf(s)
+	t := v.Type()
+
+	// Accept direct struct
+	if t.Kind() == reflect.Struct {
+		return
 	}
-}
 
-func FirstFieldWithTagValue(fields []StructField, tagOption string) (int, bool) {
-
-	hp := tagOption + ","
-	hs := "," + tagOption
-	co := "," + tagOption + ","
-
-	for i := range fields {
-		tag := fields[i].Tag
-		if tag == tagOption ||
-			strings.HasPrefix(tag, hp) ||
-			strings.HasSuffix(tag, hs) ||
-			strings.Contains(tag, co) {
-			return i, true
-		}
+	// Accept pointer to struct
+	if t.Kind() == reflect.Ptr && t.Elem().Kind() == reflect.Struct {
+		return
 	}
-	return -1, false
+	panic("MustBeStruct: expected struct or pointer to struct, got " + t.Kind().String())
 }

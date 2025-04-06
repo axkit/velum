@@ -3,109 +3,29 @@ package velum_test
 import (
 	"context"
 	"testing"
+
+	"github.com/axkit/velum"
 )
 
-// func BenchmarkTable_Array8(b *testing.B) {
-
-// 	//tbl := velum.NewTable[Customer]("customers")
-
-// 	customer := &Customer{
-// 		ID:        1,
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
-// 	}
-
-// 	for b.Loop() {
-// 		_ = velum.FieldAddrArray[[8]any](customer, [][]int{{0}, {1}, {2}, {3}, {4}, {5, 0}, {5, 1}})
-
-// 	}
-// }
-
-// func BenchmarkTable_Array2(b *testing.B) {
-
-// 	//tbl := velum.NewTable[Customer]("customers")
-
-// 	customer := &Customer{
-// 		ID:        1,
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
-// 	}
-
-// 	for b.Loop() {
-// 		_ = velum.FieldAddrArray[[2]any](customer, [][]int{{0}, {1}})
-// 	}
-// }
-
-// func BenchmarkTable_Array32(b *testing.B) {
-
-// 	//tbl := velum.NewTable[Customer]("customers")
-
-// 	customer := &Customer{
-// 		ID:        1,
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
-// 	}
-
-// 	for b.Loop() {
-// 		_ = velum.FieldAddrArray[[32]any](customer, [][]int{{0}, {1}, {2}, {3}, {4}, {5, 0}, {5, 1}})
-
-// 	}
-// }
-
-// func BenchmarkTable_FieldAddrs(b *testing.B) {
-
-// 	tbl := velum.NewTable[Customer]("customers")
-
-// 	customer := &Customer{
-// 		ID:        1,
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
-// 	}
-
-// 	for b.Loop() {
-// 		ptrs := tbl.FieldAddrs(customer, [][]int{{0}, {1}, {2}, {3}, {4}, {5, 0}, {5, 1}})
-// 		tbl.ReleaseArgs(&ptrs)
-// 	}
-// }
-
-// func BenchmarkTable_FieldAddrsX(b *testing.B) {
-
-// 	tbl := velum.NewTable[Customer]("customers")
-
-// 	customer := &Customer{
-// 		ID:        1,
-// 		FirstName: "John",
-// 		LastName:  "Doe",
-// 		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
-// 	}
-
-// 	for b.Loop() {
-// 		_ = tbl.FieldAddrsX(customer, [][]int{{0}, {1}, {2}, {3}, {4}, {5, 0}, {5, 1}})
-// 	}
-// }
-
-func Benchmark_Select1PgxRaw_Inner(b *testing.B) {
+func Benchmark_Select1_Sql_Raw_Outer(b *testing.B) {
 	ctx := context.Background()
 
 	initConnections(b)
 
-	//q := tbl.Select("", strup.OrderBy("id"), strup.Limit(1))
+	var c CustomerSerial
 
 	b.ReportAllocs()
 	b.ResetTimer()
-
 	for b.Loop() {
-		var c CustomerSerial
+		row := dbSql.QueryRowContext(ctx, `SELECT id, first_name, last_name, age,
+	                              ssn, row_version,created_at, updated_at, deleted_at, deleted_by
+							FROM customers_pk_serial WHERE id = $1`, 1)
+		if err := row.Err(); err != nil {
+			b.Fatalf("failed to select customers: %v", err)
+		}
 
-		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, birth_date,
-								ssn, row_version,created_at, updated_at, deleted_at, deleted_by
-						FROM customers WHERE id = $1`, 1)
 		err := row.Scan(&c.ID, &c.FirstName,
-			&c.LastName, &c.BirthDate,
+			&c.LastName, &c.Age,
 			&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy)
 		if err != nil {
 			b.Fatalf("failed to scan customer: %v", err)
@@ -113,23 +33,101 @@ func Benchmark_Select1PgxRaw_Inner(b *testing.B) {
 	}
 }
 
-func Benchmark_Select1PgxRaw_Outer(b *testing.B) {
+func Benchmark_Select1_Pgx_Tbl_GetByPK(b *testing.B) {
 	ctx := context.Background()
 
 	initConnections(b)
 
-	//q := tbl.Select("", strup.OrderBy("id"), strup.Limit(1))
+	tbl := velum.NewTable[CustomerSerial]("customers_pk_serial")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		c, err := tbl.GetByPK(ctx, dbwPgx, 1)
+		if err != nil {
+			b.Fatalf("failed to select customer: %v", err)
+		}
+		_ = c
+	}
+}
+
+func Benchmark_Select1_Pgx_Tbl_GetTo(b *testing.B) {
+	ctx := context.Background()
+
+	initConnections(b)
+
+	tbl := velum.NewTable[CustomerSerial]("customers_pk_serial")
+	b.ReportAllocs()
+	b.ResetTimer()
+	c, ptrs := tbl.Object(velum.FullScope)
+	for b.Loop() {
+		err := tbl.GetTo(ctx, dbwPgx, *ptrs, 1)
+		if err != nil {
+			b.Fatalf("failed to select customer: %v", err)
+		}
+	}
+	tbl.ObjectPut(c, ptrs)
+}
+
+func Benchmark_Select1_Pgx_Raw_Inner(b *testing.B) {
+	ctx := context.Background()
+
+	initConnections(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		var c CustomerSerial
+
+		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, age,
+								ssn, row_version,created_at, updated_at, deleted_at, deleted_by
+						FROM customers_pk_serial WHERE id = $1`, 1)
+		err := row.Scan(&c.ID, &c.FirstName,
+			&c.LastName, &c.Age,
+			&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy)
+		if err != nil {
+			b.Fatalf("failed to scan customer: %v", err)
+		}
+	}
+}
+func Benchmark_Select1_Pgx_Raw_Inner_Slice(b *testing.B) {
+	ctx := context.Background()
+
+	initConnections(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		var c CustomerSerial
+		ptrs := []any{&c.ID, &c.FirstName,
+			&c.LastName, &c.Age,
+			&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy}
+		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, age,
+								ssn, row_version,created_at, updated_at, deleted_at, deleted_by
+						FROM customers_pk_serial WHERE id = $1`, 1)
+		err := row.Scan(ptrs...)
+		if err != nil {
+			b.Fatalf("failed to scan customer: %v", err)
+		}
+	}
+}
+
+func Benchmark_Select1_Pgx_Raw_Outer(b *testing.B) {
+	ctx := context.Background()
+
+	initConnections(b)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	var c CustomerSerial
 
 	for b.Loop() {
-		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, birth_date,
+		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, age,
 								ssn, row_version,created_at, updated_at, deleted_at, deleted_by
-						FROM customers WHERE id = $1`, 1)
+						FROM customers_pk_serial WHERE id = $1`, 1)
 		err := row.Scan(&c.ID, &c.FirstName,
-			&c.LastName, &c.BirthDate,
+			&c.LastName, &c.Age,
 			&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy)
 		if err != nil {
 			b.Fatalf("failed to scan customer: %v", err)
@@ -137,45 +135,29 @@ func Benchmark_Select1PgxRaw_Outer(b *testing.B) {
 	}
 }
 
-// func Benchmark_Select1_PgxTbl_SelectByPK(b *testing.B) {
-// 	ctx := context.Background()
-
-// 	initConnections(b)
-
-// 	tbl := velum.NewTable[Customer]("customers")
-// 	b.ReportAllocs()
-// 	b.ResetTimer()
-// 	for b.Loop() {
-// 		c, err := tbl.SelectByPK(ctx, dbwPgx, 1)
-// 		if err != nil {
-// 			b.Fatalf("failed to select customer: %v", err)
-// 		}
-// 		_ = c
-// 	}
-// }
-
-func Benchmark_Select1SqlRaw(b *testing.B) {
+func Benchmark_Select1_Pgx_Raw_Outer_Slice(b *testing.B) {
 	ctx := context.Background()
 
 	initConnections(b)
 
+	var c CustomerSerial
+
+	ptrs := []any{&c.ID, &c.FirstName,
+		&c.LastName, &c.Age,
+		&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy}
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		var c CustomerSerial
-		row := dbSql.QueryRowContext(ctx, `SELECT id, first_name, last_name, birth_date,
-	                              ssn, row_version,created_at, updated_at, deleted_at, deleted_by
-							FROM customers WHERE id = $1`, 1)
-		if err := row.Err(); err != nil {
-			b.Fatalf("failed to select customers: %v", err)
-		}
-
-		err := row.Scan(&c.ID, &c.FirstName,
-			&c.LastName, &c.BirthDate,
-			&c.SSN, &c.RowVersion, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt, &c.DeletedBy)
+		row := dbPgx.QueryRow(ctx, `SELECT id, first_name, last_name, age,
+								ssn, row_version,created_at, updated_at, deleted_at, deleted_by
+						FROM customers_pk_serial WHERE id = $1`, 1)
+		err := row.Scan(ptrs...)
 		if err != nil {
 			b.Fatalf("failed to scan customer: %v", err)
 		}
+		a := c
+		_ = a
 	}
 }
 

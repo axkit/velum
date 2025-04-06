@@ -3,7 +3,7 @@ package velum
 type TableConfig struct {
 	tag            string
 	name           string
-	argNumerator   func(arg int) string
+	argFormatter   ArgFormatter
 	colNameBuilder func(attr, tag string) string
 	seqNameBuilder func(string) string
 }
@@ -18,13 +18,13 @@ func WithTag(tag string) TableOption {
 
 func WithName(name string) TableOption {
 	return func(o *TableConfig) {
-		o.tag = name
+		o.name = name
 	}
 }
 
-func WithArgumentNumerator(f func(argPos int) string) TableOption {
+func WithArgFormatter(f ArgFormatter) TableOption {
 	return func(o *TableConfig) {
-		o.argNumerator = f
+		o.argFormatter = f
 	}
 }
 

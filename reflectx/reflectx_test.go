@@ -76,3 +76,56 @@ func TestExtractStructFields(t *testing.T) {
 		})
 	}
 }
+func TestMustBeStruct(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       any
+		shouldPanic bool
+	}{
+		{
+			name:        "StructInput",
+			input:       struct{}{},
+			shouldPanic: false,
+		},
+		{
+			name:        "PointerToStructInput",
+			input:       &struct{}{},
+			shouldPanic: false,
+		},
+		{
+			name:        "NonStructInputInt",
+			input:       42,
+			shouldPanic: true,
+		},
+		{
+			name:        "NonStructInputString",
+			input:       "not a struct",
+			shouldPanic: true,
+		},
+		{
+			name:        "NilInput",
+			input:       nil,
+			shouldPanic: true,
+		},
+		{
+			name:        "SliceInput",
+			input:       []int{1, 2, 3},
+			shouldPanic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					if !tt.shouldPanic {
+						t.Errorf("unexpected panic for input: %v", tt.input)
+					}
+				} else if tt.shouldPanic {
+					t.Errorf("expected panic but did not panic for input: %v", tt.input)
+				}
+			}()
+			MustBeStruct(tt.input)
+		})
+	}
+}

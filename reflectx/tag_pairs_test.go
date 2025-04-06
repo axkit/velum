@@ -21,7 +21,7 @@ func TestTagPairs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tp := ParseTagPairs(tt.tag)
+			tp := ParseTagPairs(tt.tag, "scope")
 			if got := tp.Get(tt.key); !reflect.DeepEqual(got, tt.getExpected) {
 				t.Errorf("Get(%s) = %v, want %v", tt.key, got, tt.getExpected)
 			}
@@ -48,7 +48,7 @@ func TestTagPairs_Value(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tp := ParseTagPairs(tt.tag)
+			tp := ParseTagPairs(tt.tag, "scope")
 			if got := tp.Value(tt.key); got != tt.expected {
 				t.Errorf("Value(%s) = %v, want %v", tt.key, got, tt.expected)
 			}

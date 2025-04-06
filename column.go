@@ -19,7 +19,8 @@ type Column struct {
 	ValueGenerator string
 }
 
-// SystemColumn describes a primary key column.
+// SystemColumn describes a column in the database that is used for
+// versioning, soft delete, etc.
 // It is a wrapper around the Column struct to add the position of the
 // column in the columns slice.
 type SystemColumn struct {

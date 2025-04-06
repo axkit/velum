@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
+	"math/rand"
 	"strconv"
 	"testing"
 	"time"
@@ -17,6 +17,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
+
+func init() {
+	time.Local = time.UTC
+}
 
 var testDatabaseTables = []struct {
 	tablename string
@@ -41,18 +45,18 @@ var (
 )
 
 type SystemColumns struct {
-	RowVersion int64          `dbw:"version"`
-	CreatedAt  time.Time      `dbw:"insert"`
-	UpdatedAt  velum.NullTime `dbw:"update"`
-	DeletedAt  velum.NullTime `dbw:"delete"`
-	DeletedBy  *int           `dbw:"delete"`
+	RowVersion int64      `dbw:"version"`
+	CreatedAt  time.Time  `dbw:"insert"`
+	UpdatedAt  *time.Time `dbw:"update"`
+	DeletedAt  *time.Time `dbw:"delete"`
+	DeletedBy  *int       `dbw:"delete"`
 }
 
 type Customer struct {
 	FirstName string
 	LastName  string
-	BirthDate time.Time `dbw:"bd"`
-	SSN       *string   `dbw:"ssn"`
+	Age       int     `dbw:"age"`
+	SSN       *string `dbw:"ssn"`
 	SystemColumns
 }
 
@@ -93,6 +97,11 @@ func equalPtr[T comparable](a, b *T) bool {
 	if a == nil || b == nil {
 		return false
 	}
+
+	var v any = a
+	if e, ok := v.(interface{ Equal(T) bool }); ok {
+		return e.Equal(*b)
+	}
 	return *a == *b
 }
 
@@ -103,17 +112,15 @@ func (a *Customer) Equal(b *Customer) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a.UpdatedAt.Valid() != b.UpdatedAt.Valid() {
-		return false
-	}
-	if a.DeletedAt.Valid() != b.DeletedAt.Valid() {
-		return false
-	}
 
-	return a.FirstName == b.FirstName && a.LastName == b.LastName &&
-		a.BirthDate.Equal(b.BirthDate) && equalPtr(a.SSN, b.SSN) &&
-		a.RowVersion == b.RowVersion && a.CreatedAt.Equal(b.CreatedAt) &&
-		a.UpdatedAt.T().Equal(b.UpdatedAt.T()) && a.DeletedAt.T().Equal(b.DeletedAt.T()) &&
+	return a.FirstName == b.FirstName &&
+		a.LastName == b.LastName &&
+		a.Age == b.Age &&
+		equalPtr(a.SSN, b.SSN) &&
+		a.RowVersion == b.RowVersion &&
+		a.CreatedAt.Equal(b.CreatedAt) &&
+		equalPtr(a.UpdatedAt, b.UpdatedAt) &&
+		equalPtr(a.DeletedAt, b.DeletedAt) &&
 		equalPtr(a.DeletedBy, b.DeletedBy)
 }
 
@@ -227,7 +234,7 @@ func selectAllCustomers(t *testing.T, db *pgxpool.Pool) ([]CustomerSerial, error
 	var customers []CustomerSerial
 	var row CustomerSerial
 
-	rows, err := db.Query(ctx, `SELECT id, first_name, last_name, birth_date, 
+	rows, err := db.Query(ctx, `SELECT id, first_name, last_name, age, 
 	                              ssn, row_version, created_at, updated_at, deleted_at, deleted_by
 							FROM customers ORDER BY id`)
 	if err != nil {
@@ -238,7 +245,7 @@ func selectAllCustomers(t *testing.T, db *pgxpool.Pool) ([]CustomerSerial, error
 
 	for rows.Next() {
 		err = rows.Scan(&row.ID, &row.FirstName,
-			&row.LastName, &row.BirthDate,
+			&row.LastName, &row.Age,
 			&row.SSN, &row.RowVersion, &row.UpdatedAt, &row.DeletedAt, &row.DeletedBy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan customer: %w", err)
@@ -259,15 +266,15 @@ func createDatabaseTable(t Helper, ctx context.Context, tablename string, idcolu
 	_, err := db.Exec(ctx, fmt.Sprintf(`
         CREATE TABLE %s (
             %s,
-            first_name TEXT 		NOT NULL,
-			last_name  TEXT 		NOT NULL,
-			birth_date TIMESTAMP 	NOT NULL,
-			ssn TEXT,
+            first_name 	TEXT 		NOT NULL,
+			last_name  	TEXT 		NOT NULL,
+			age 	   	INT2 		NOT NULL DEFAULT 18,
+			ssn 		TEXT,
 			row_version INT8 		NOT NULL 	DEFAULT 0,
-			created_at TIMESTAMP 	NOT NULL	DEFAULT CURRENT_TIMESTAMP,
-			updated_At TIMESTAMPTZ,
-            deleted_at TIMESTAMP WITHOUT TIME ZONE,
-			deleted_by INT8
+			created_at 	TIMESTAMP 	NOT NULL	DEFAULT CURRENT_TIMESTAMP,
+			updated_At 	TIMESTAMPTZ,
+            deleted_at 	TIMESTAMP WITHOUT TIME ZONE,
+			deleted_by 	INT8
         )
     `, tablename, idcolumn))
 	if err != nil {
@@ -312,7 +319,7 @@ func createCustomerRows(t Helper, ctx context.Context, db *pgxpool.Pool, n int) 
 		c := Customer{
 			FirstName: "First" + strconv.Itoa(i),
 			LastName:  "Last" + strconv.Itoa(i),
-			BirthDate: time.Date(1900+i, 1, 1, 0, 0, 0, 0, time.UTC),
+			Age:       18 + rand.Intn(80),
 			SSN:       nil,
 			SystemColumns: SystemColumns{
 				RowVersion: 1,
@@ -321,49 +328,49 @@ func createCustomerRows(t Helper, ctx context.Context, db *pgxpool.Pool, n int) 
 		}
 
 		_, err := db.Exec(ctx, `
-			INSERT INTO customers_pk_serial (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES (DEFAULT, $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_pk_serial (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES (DEFAULT, $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_pk_serial: %w", err)
 		}
 
 		_, err = db.Exec(ctx, `
-			INSERT INTO customers_pk_friendly_seq (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES (nextval('customers_pk_friendly_seq_seq'), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_pk_friendly_seq (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES (nextval('customers_pk_friendly_seq_seq'), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_pk_friendly_seq: %w", err)
 		}
 
 		_, err = db.Exec(ctx, `
-			INSERT INTO customers_pk_custom_seq (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES (nextval('custom_seq'), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_pk_custom_seq (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES (nextval('custom_seq'), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_pk_custom_seq: %w", err)
 		}
 		_, err = db.Exec(ctx, `
-			INSERT INTO customers_pk_uuid (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_pk_uuid (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6)`, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_pk_uuid: %w", err)
 		}
 
 		_, err = db.Exec(ctx, `
-			INSERT INTO customers_pk_manual (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, i, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_pk_manual (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, i, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_pk_manual: %w", err)
 		}
 
 		_, err = db.Exec(ctx, `
-			INSERT INTO customers_without_pk (id, first_name, last_name, birth_date, ssn, created_at, row_version)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`, i, c.FirstName, c.LastName, c.BirthDate, c.SSN, c.CreatedAt, c.RowVersion)
+			INSERT INTO customers_without_pk (id, first_name, last_name, age, ssn, created_at, row_version)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, i, c.FirstName, c.LastName, c.Age, c.SSN, c.CreatedAt, c.RowVersion)
 		if err != nil {
 			t.Fatalf("failed to insert test customers_without_pk: %w", err)
 		}
 	}
 }
 
-func TestStructToTabeName(t *testing.T) {
+func TestStructPluralName(t *testing.T) {
 	type Customer struct{}
 	type Bus struct{}
 	type Box struct{}
@@ -388,17 +395,9 @@ func TestStructToTabeName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			snakeName := velum.ToSnakeCase(reflect.TypeOf(tt.input).Name(), "")
-			result := velum.ToPluralName(snakeName)
+			result := velum.StructPluralName(tt.input)
 			if result != tt.expected {
 				t.Errorf("expected %s, got %s", tt.expected, result)
-			}
-		})
-
-		t.Run("generic", func(t *testing.T) {
-			snakeName := velum.StructPluralName[Customer]()
-			if snakeName != "customers" {
-				t.Errorf("expected customers, got %s", snakeName)
 			}
 		})
 	}

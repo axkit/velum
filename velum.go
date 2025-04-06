@@ -2,7 +2,6 @@ package velum
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -17,7 +16,7 @@ var DefaultColumnNameBuilder = ToSnakeCase
 
 // DefaultParamPlaceholderBuilder refers to the function that converts the
 // argument position to the placeholder in the SQL query.
-var DefaultParamPlaceholderBuilder = ParamAsNumber
+var DefaultParamPlaceholderBuilder = ArgAsNumber
 
 // DefaultFriendlySequenceNameBuilder refers to the function that converts the
 // table name to the sequence name.
@@ -34,6 +33,8 @@ const (
 
 	// FullScope is the scope that includes all fields, including system fields.
 	FullScope Scope = "*"
+
+	scopeTagKey string = "scope"
 )
 
 var (
@@ -44,6 +45,7 @@ var (
 	DeleteScope           Scope = "delete"
 	PrimaryKeyTagOption         = "pk"
 	StandardPrimaryKeyCol       = "id"
+	SystemScope           Scope = "system"
 )
 
 // SystemScopes holds the system scopes.
@@ -159,7 +161,7 @@ type Transaction interface {
 	QueryRowExecuter
 	QueryExecuter
 	Commit(context.Context) error
-	Rollback() error
+	Rollback(context.Context) error
 }
 
 type TransactionManager interface {
@@ -190,9 +192,9 @@ func ToSnakeCase(attr, tag string) string {
 	return strings.ToLower(snake)
 }
 
-type ArgNumberBuilder func(i int) string
+type ArgFormatter func(i int) string
 
-func ParamAsNumber(i int) string {
+func ArgAsNumber(i int) string {
 	return "$" + strconv.Itoa(i)
 }
 
@@ -224,12 +226,11 @@ func ShiftParamPositions(sqlWhere string, fromIndex int) string {
 // StructPluralName converts the struct name to the table name.
 // By default, it converts the struct name to snake case and
 // pluralizes it.
-func StructPluralName[T any]() string {
-	var t T
-	mustBeStruct(t)
-
-	snakeName := ToSnakeCase(reflect.TypeOf(t).Name(), "")
-	return ToPluralName(snakeName)
+func StructPluralName(v any) string {
+	name := reflect.TypeOf(v).Name()
+	snake := matchFirstCap.ReplaceAllString(name, "${1}_${2}")
+	snake = matchAllCap.ReplaceAllString(snake, "${1}_${2}")
+	return strings.ToLower(ToPluralName(snake))
 }
 
 func ToPluralName(s string) string {
@@ -242,23 +243,6 @@ func ToPluralName(s string) string {
 		return s + "es" // Add 'es' for these suffixes
 	}
 	return s + "s" // Default pluralization by adding 's'
-}
-
-func mustBeStruct(s any) {
-	v := reflect.ValueOf(s)
-	t := v.Type()
-
-	// Accept direct struct
-	if t.Kind() == reflect.Struct {
-		return
-	}
-
-	// Accept pointer to struct
-	if t.Kind() == reflect.Ptr && t.Elem().Kind() == reflect.Struct {
-		return
-	}
-
-	panic(fmt.Sprintf("mustBeStruct: expected struct or pointer to struct, got %s", t.Kind()))
 }
 
 // IsTagOptionExists checks if the tag contains the tagOption.
@@ -274,5 +258,4 @@ func IsTagOptionExist(tag string, tagOption string) bool {
 		strings.HasPrefix(tag, hp) ||
 		strings.HasSuffix(tag, hs) ||
 		strings.Contains(tag, co)
-
 }

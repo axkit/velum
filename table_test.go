@@ -36,10 +36,11 @@ func TestTable_BasicDML(t *testing.T) {
 
 	initConnections(t)
 
-	c := Customer{
+	customer := Customer{
 		FirstName: "John",
 		LastName:  "Doe",
-		BirthDate: time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC),
+		Age:       18,
+		SSN:       nil,
 		SystemColumns: SystemColumns{
 			CreatedAt:  time.Now(),
 			RowVersion: 1,
@@ -48,97 +49,168 @@ func TestTable_BasicDML(t *testing.T) {
 
 	t.Run("customers_pk_serial", func(t *testing.T) {
 		tbl := velum.NewTable[CustomerSerial]("customers_pk_serial")
-		customer := &CustomerSerial{
-			Customer: c,
+		c := CustomerSerial{
+			Customer: customer,
 		}
-		var err error
 
 		t.Run("Insert", func(t *testing.T) {
 
-			customer, err = tbl.InsertReturning(ctx, dbwPgx, customer, "*", "*")
+			cIns, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
 			if err != nil {
 				t.Fatalf("failed to insert customer: %v", err)
 			}
 
-			// check if ID is set by DB and returned.
-			if customer.ID == 0 {
-				t.Fatalf("expected customer ID to be non-zero")
+			if cIns.ID == 0 {
+				t.Fatalf("expected customer ID to be asigned by the database")
+			}
+
+			if !cIns.Customer.Equal(&c.Customer) {
+				t.Fatalf("\nexp:%#v\ngot:%#v", c, cIns)
 			}
 		})
 
 		t.Run("GetByPK", func(t *testing.T) {
 
-			c, err := tbl.GetByPK(ctx, dbwPgx, customer.ID)
+			cIns, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
+			if err != nil {
+				t.Fatalf("failed to insert customer: %v", err)
+			}
+
+			cGet, err := tbl.GetByPK(ctx, dbwPgx, cIns.ID)
 			if err != nil {
 				t.Fatalf("failed to select customer: %v", err)
 			}
 
-			if !c.Customer.Equal(&customer.Customer) || c.ID != customer.ID {
-				t.Fatalf("expected %v, got %v", customer, c)
+			if !cGet.Customer.Equal(&cIns.Customer) || cGet.ID != cIns.ID {
+				t.Fatalf("\nexp:%#v\ngot:%#v", cIns, cGet)
 			}
 		})
 
-		t.Run("UpdateByPK/*", func(t *testing.T) {
-			customer.FirstName = "Jane"
-			customer.UpdatedAt.SetNow()
+		t.Run("UpdateByPK_*", func(t *testing.T) {
 
-			if _, err := tbl.UpdateByPK(ctx, dbwPgx, "*", customer); err != nil {
+			uc, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
+			if err != nil {
+				t.Fatalf("failed to insert customer: %v", err)
+			}
+
+			uc.FirstName = "Jane"
+			uc.Age = 19
+			now := time.Now()
+			uc.UpdatedAt = &now
+
+			if _, err := tbl.UpdateByPK(ctx, dbwPgx, uc, "*"); err != nil {
 				t.Fatalf("failed to update customer: %v", err)
 			}
 
-			updatedCustomer, err := tbl.GetByPK(ctx, dbwPgx, customer.ID)
+			cUpd, err := tbl.GetByPK(ctx, dbwPgx, uc.ID)
 			if err != nil {
 				t.Fatalf("failed to select customer: %v", err)
 			}
 
-			customer.RowVersion++ // to make it equal to the updated row version
-			if !customer.Equal(&updatedCustomer.Customer) {
-				t.Fatalf("\nexp %#v\ngot %#v", customer, updatedCustomer)
+			uc.RowVersion++ // to make it equal to the updated row version
+			if !uc.Equal(&cUpd.Customer) {
+				t.Fatalf("\nexp:%#v\ngot:%#v", uc, cUpd)
+			}
+		})
+
+		t.Run("UpdateReturningByPK_ssn_*", func(t *testing.T) {
+
+			uc, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
+			if err != nil {
+				t.Fatalf("failed to insert customer: %v", err)
+			}
+
+			uc.FirstName = "Rob"
+			uc.SSN = &[]string{"123-45-6789"}[0]
+			now := time.Now()
+			uc.UpdatedAt = &now
+
+			cUpd, err := tbl.UpdateReturningByPK(ctx, dbwPgx, uc, "ssn", "*")
+			if err != nil {
+				t.Fatalf("failed to update customer: %v", err)
+			}
+
+			if cUpd.SSN == nil {
+				t.Fatalf("expected SSN to be set, got nil")
+			}
+
+			if cUpd.FirstName == uc.FirstName {
+				t.Fatalf("expected only SSN to be updated, got %#v", *cUpd)
+			}
+
+			uc.RowVersion++ // to make it equal to the updated row version
+
+			if cUpd.ID != uc.ID ||
+				cUpd.RowVersion != uc.RowVersion ||
+				cUpd.Age != uc.Age ||
+				*cUpd.SSN != *uc.SSN ||
+				!((cUpd.UpdatedAt).Equal(*uc.UpdatedAt)) {
+				t.Fatalf("\nexp:%#v\ngot:%#v", uc, cUpd)
+			}
+
+		})
+		t.Run("UpdateReturningByPK_!ssn_ssn_age", func(t *testing.T) {
+
+			uc, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
+			if err != nil {
+				t.Fatalf("failed to insert customer: %v", err)
+			}
+
+			uc.FirstName = "Rob"
+			uc.Age = 20
+			uc.SSN = &[]string{"987-65-4321"}[0]
+			now := time.Now()
+			uc.UpdatedAt = &now
+
+			cUpd, err := tbl.UpdateReturningByPK(ctx, dbwPgx, uc, "!ssn", "age,ssn")
+			if err != nil {
+				t.Fatalf("failed to update customer: %v", err)
+			}
+
+			if cUpd.SSN != nil || cUpd.FirstName != "" || cUpd.LastName != "" {
+				t.Fatalf("expected SSN and Age to be returned, got nil")
+			}
+
+			if cUpd.Age != uc.Age {
+				t.Fatalf("expected Age to be updated and returned, got %#v", *cUpd)
+			}
+
+			if equalPtr(cUpd.SSN, uc.SSN) {
+				t.Fatalf("expected SSN to be ignored, got %#v", *cUpd)
+			}
+
+		})
+		t.Run("SoftDeleteByPK", func(t *testing.T) {
+			uc, err := tbl.InsertReturning(ctx, dbwPgx, &c, "*", "*")
+			if err != nil {
+				t.Fatalf("failed to insert customer: %v", err)
+			}
+
+			now := time.Now()
+			uc.DeletedAt = &now
+			uc.DeletedBy = new(int)
+			*uc.DeletedBy = 101
+
+			err = dbwPgx.InTx(ctx, func(tx velum.Transaction) error {
+				_, err := tbl.SoftDeleteByPK(ctx, tx, uc)
+				return err
+			})
+
+			if err != nil {
+				t.Fatalf("failed to delete customer: %v", err)
+			}
+
+			dc, err := tbl.GetByPK(ctx, dbwPgx, uc.ID)
+			if err != nil {
+				t.Fatalf("failed to select customer: %v", err)
+			}
+
+			if !uc.Equal(&dc.Customer) {
+				t.Fatalf("\nexp:%#v\ngot:%#v", customer, dc.Customer)
 			}
 		})
 	})
 
-	// t.Run("UpdateByPK/age", func(t *testing.T) {
-	// 	customer.FirstName = "Rob"
-	// 	customer.SSN = &[]string{"123-45-6789"}[0]
-	// 	customer.UpdatedAt.SetNow()
-
-	// 	if err := tbl.UpdateByPK(ctx, dbwPgx, &customer, velum.WithScope("ssn")); err != nil {
-	// 		t.Fatalf("failed to update customer: %v", err)
-	// 	}
-
-	// 	if customer.FirstName == "Rob" {
-	// 		t.Fatalf("expected first name 'Rob', got %q", customer.FirstName)
-	// 	}
-
-	// 	updatedCustomer, err := tbl.SelectByPK(ctx, dbwPgx, customer.ID)
-	// 	if err != nil {
-	// 		t.Fatalf("failed to select customer: %v", err)
-	// 	}
-
-	// 	if *customer.SSN != *updatedCustomer.SSN {
-	// 		t.Fatalf("expected SSN %q, got %q", *customer.SSN, *updatedCustomer.SSN)
-	// 	}
-	// })
-
-	// t.Run("SoftDeleteByPK", func(t *testing.T) {
-	// 	customer.DeletedAt.SetNow()
-	// 	customer.DeletedBy = new(int)
-	// 	*customer.DeletedBy = 101
-
-	// 	if err := tbl.SoftDeleteByPK(ctx, dbwPgx, &customer); err != nil {
-	// 		t.Fatalf("failed to delete customer: %v", err)
-	// 	}
-
-	// 	deletedCustomer, err := tbl.SelectByPK(ctx, dbwPgx, customer.ID)
-	// 	if err != nil {
-	// 		t.Fatalf("failed to select customer: %v", err)
-	// 	}
-
-	// 	if !customer.Equal(deletedCustomer) {
-	// 		t.Fatalf("expected %v, got %v", customer, deletedCustomer)
-	// 	}
-	// })
 }
 
 // func TestTable_Update(t *testing.T) {

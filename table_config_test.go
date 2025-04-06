@@ -21,16 +21,16 @@ func TestTableOptions(t *testing.T) {
 			name:   "WithName sets the name field",
 			option: WithName("test_name"),
 			expected: TableConfig{
-				tag: "test_name", // Note: WithName sets the `tag` field in the current implementation
+				name: "test_name", // Note: WithName sets the `tag` field in the current implementation
 			},
 		},
 		{
 			name: "WithArgumentNumerator sets the argNumerator function",
-			option: WithArgumentNumerator(func(argPos int) string {
+			option: WithArgFormatter(func(argPos int) string {
 				return "arg_" + string(rune(argPos+'0'))
 			}),
 			expected: TableConfig{
-				argNumerator: func(argPos int) string {
+				argFormatter: func(argPos int) string {
 					return "arg_" + string(rune(argPos+'0'))
 				},
 			},
@@ -70,9 +70,9 @@ func TestTableOptions(t *testing.T) {
 				t.Errorf("expected tag = %v, got %v", tt.expected.tag, config.tag)
 			}
 
-			if tt.expected.argNumerator != nil {
-				expectedArg := tt.expected.argNumerator(1)
-				gotArg := config.argNumerator(1)
+			if tt.expected.argFormatter != nil {
+				expectedArg := tt.expected.argFormatter(1)
+				gotArg := config.argFormatter(1)
 				if expectedArg != gotArg {
 					t.Errorf("expected argNumerator(1) = %v, got %v", expectedArg, gotArg)
 				}

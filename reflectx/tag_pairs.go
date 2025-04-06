@@ -58,7 +58,7 @@ func (tp TagPairs) PairExist(key, val string) bool {
 }
 
 // ParseTagPairs parses a tag string into TagPairsX.
-func ParseTagPairs(tag string) TagPairs {
+func ParseTagPairs(tag string, scopeTagKey string) TagPairs {
 	tp := make(TagPairs)
 
 	if len(tag) == 0 {
@@ -81,11 +81,7 @@ func ParseTagPairs(tag string) TagPairs {
 			if len(kv) == 2 {
 				tp.Add(kv[0], kv[1])
 			} else {
-				if kv[0] == "pk" {
-					tp.Add("pk", "")
-				} else {
-					tp.Add("scope", kv[0])
-				}
+				tp.Add(scopeTagKey, s)
 			}
 		}
 
