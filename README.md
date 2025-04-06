@@ -25,10 +25,10 @@ type Customer struct {
 	} 
 	Origin string  		 	`dbw:"-"`
 	RowVersion 	int64		`dbw:"version"`
-	CreatedAt 	time.Time  	`dbw:"created"`
-	UpdatedAt 	*time.Time 	`dbw:"updated"`
-	DeletedAt 	*time.Time 	`dbw:"deleted"`
-	DeletedBy 	*int       	`dbw:"deleted"`
+	CreatedAt 	time.Time  	`dbw:"insert"`
+	UpdatedAt 	*time.Time 	`dbw:"update"`
+	DeletedAt 	*time.Time 	`dbw:"delete"`
+	DeletedBy 	*int       	`dbw:"delete"`
 }
 
 	// once
