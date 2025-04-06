@@ -42,7 +42,7 @@ func TestTable_BasicDML(t *testing.T) {
 		Age:       18,
 		SSN:       nil,
 		SystemColumns: SystemColumns{
-			CreatedAt:  time.Now(),
+			CreatedAt:  *now(),
 			RowVersion: 1,
 		},
 	}
@@ -95,8 +95,7 @@ func TestTable_BasicDML(t *testing.T) {
 
 			uc.FirstName = "Jane"
 			uc.Age = 19
-			now := time.Now()
-			uc.UpdatedAt = &now
+			uc.UpdatedAt = now()
 
 			if _, err := tbl.UpdateByPK(ctx, dbwPgx, uc, "*"); err != nil {
 				t.Fatalf("failed to update customer: %v", err)
@@ -122,8 +121,7 @@ func TestTable_BasicDML(t *testing.T) {
 
 			uc.FirstName = "Rob"
 			uc.SSN = &[]string{"123-45-6789"}[0]
-			now := time.Now()
-			uc.UpdatedAt = &now
+			uc.UpdatedAt = now()
 
 			cUpd, err := tbl.UpdateReturningByPK(ctx, dbwPgx, uc, "ssn", "*")
 			if err != nil {
@@ -159,8 +157,7 @@ func TestTable_BasicDML(t *testing.T) {
 			uc.FirstName = "Rob"
 			uc.Age = 20
 			uc.SSN = &[]string{"987-65-4321"}[0]
-			now := time.Now()
-			uc.UpdatedAt = &now
+			uc.UpdatedAt = now()
 
 			cUpd, err := tbl.UpdateReturningByPK(ctx, dbwPgx, uc, "!ssn", "age,ssn")
 			if err != nil {
@@ -186,8 +183,7 @@ func TestTable_BasicDML(t *testing.T) {
 				t.Fatalf("failed to insert customer: %v", err)
 			}
 
-			now := time.Now()
-			uc.DeletedAt = &now
+			uc.DeletedAt = now()
 			uc.DeletedBy = new(int)
 			*uc.DeletedBy = 101
 
@@ -210,7 +206,11 @@ func TestTable_BasicDML(t *testing.T) {
 			}
 		})
 	})
+}
 
+func now() *time.Time {
+	t := time.Now().Truncate(time.Microsecond)
+	return &t
 }
 
 // func TestTable_Update(t *testing.T) {
