@@ -41,7 +41,7 @@ func (w *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction
 	return fn(tx)
 }
 
-func (w *DatabaseWrapper) Begin(ctx context.Context) (*TransactionWrapper, error) {
+func (w *DatabaseWrapper) Begin(ctx context.Context) (velum.Transaction, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
 		return nil, err

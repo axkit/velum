@@ -156,20 +156,6 @@ const (
 	LevelLinearizable
 )
 
-type Transaction interface {
-	Executer
-	QueryRowExecuter
-	QueryExecuter
-	Commit(context.Context) error
-	Rollback(context.Context) error
-}
-
-type TransactionManager interface {
-	Begin() (Transaction, error)
-	BeginTx(context.Context, IsolationLevel) (Transaction, error)
-	InTx(context.Context, func(context.Context, Transaction) error) error
-}
-
 var matchFirstCap = regexp.MustCompile("(.)([A-Z][a-z]+)")
 var matchAllCap = regexp.MustCompile("([a-z0-9])([A-Z])")
 
@@ -258,4 +244,20 @@ func IsTagOptionExist(tag string, tagOption string) bool {
 		strings.HasPrefix(tag, hp) ||
 		strings.HasSuffix(tag, hs) ||
 		strings.Contains(tag, co)
+}
+
+type Transaction interface {
+	Executer
+	QueryRowExecuter
+	QueryExecuter
+	Commit(context.Context) error
+	Rollback(context.Context) error
+}
+
+type DatabaseWrapper interface {
+	Executer
+	QueryRowExecuter
+	QueryExecuter
+	Begin(context.Context) (Transaction, error)
+	InTx(context.Context, func(Transaction) error) error
 }
