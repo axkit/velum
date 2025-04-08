@@ -2,6 +2,7 @@ package pgxw
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/axkit/velum"
@@ -23,6 +24,9 @@ func NewDatabaseWrapper(db *pgxpool.Pool) *DatabaseWrapper {
 
 func (w *DatabaseWrapper) DB() *pgxpool.Pool {
 	return w.db
+}
+func (w *DatabaseWrapper) IsNotFound(err error) bool {
+	return errors.Is(err, pgx.ErrNoRows)
 }
 
 func (w *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
@@ -82,7 +86,7 @@ func (rw *RowWrapper) Err() error {
 	return nil
 }
 
-const doPrint = false
+const doPrint = true
 
 func (w *DatabaseWrapper) ExecContext(ctx context.Context, sql string, args ...any) (velum.Result, error) {
 

@@ -117,6 +117,29 @@ func (c *ReturningCommand[T]) QueryRow(ctx context.Context, q QueryRowExecuter, 
 	return &res, nil
 }
 
+func (c *ReturningCommand[T]) QueryRowTo(ctx context.Context, q QueryRowExecuter, str *T, args ...any) error {
+
+	ptrs := c.sfpe.StructFieldPtrs(str, c.cpos)
+	defer c.sfpe.Release(ptrs)
+
+	joinedPtrs := *ptrs
+	if len(args) > 0 {
+		joinedPtrs = append(joinedPtrs, args...)
+	}
+
+	row := q.QueryRowContext(ctx, c.sql, joinedPtrs...)
+	if err := row.Err(); err != nil {
+		return err
+	}
+
+	rets := c.sfpe.StructFieldPtrs(str, c.rets)
+	defer c.sfpe.Release(rets)
+	if err := row.Scan(*rets...); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *ReturningCommand[T]) Query(ctx context.Context, q QueryExecuter, args ...any) ([]T, error) {
 
 	rows, err := q.QueryContext(ctx, c.sql, args...)

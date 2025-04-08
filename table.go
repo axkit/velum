@@ -170,6 +170,7 @@ func (t *Table[T]) initPool() {
 func (t *Table[T]) initFrequentCommands() {
 	if t.pk != nil {
 		t.wherePkClause = "WHERE " + t.pk.Name + "=" + t.cfg.argFormatter(1)
+		t.freqCmd.insertAllFields = t.cc.InsertReturning(FullScope, FullScope)
 		t.freqCmd.selectAllFieldsByPK = t.cc.Select(FullScope, t.wherePkClause)
 		t.freqCmd.updateAllFieldsByPK = t.cc.UpdateReturning(FullScope, FullScope, ByPK())
 		t.freqCmd.deleteByPK = "DELETE FROM " + t.name + " " + t.wherePkClause
@@ -311,7 +312,16 @@ func (t *Table[T]) Select(ctx context.Context, q QueryExecuter, scope Scope, cla
 	return cmd.GetMany(ctx, q, args...)
 }
 
-func (t *Table[T]) Insert(ctx context.Context, q Executer, row *T, scope Scope) (Result, error) {
+func (t *Table[T]) SelectAll(ctx context.Context, q QueryExecuter) ([]T, error) {
+	cmd := t.cc.Select(FullScope, "")
+	return cmd.GetMany(ctx, q)
+}
+
+func (t *Table[T]) Insert(ctx context.Context, q QueryRowExecuter, row *T) error {
+	return t.cc.t.freqCmd.insertAllFields.QueryRowTo(ctx, q, row)
+}
+
+func (t *Table[T]) InsertScope(ctx context.Context, q Executer, row *T, scope Scope) (Result, error) {
 	cmd := t.cc.Insert(scope)
 	return cmd.Exec(ctx, q, row)
 }

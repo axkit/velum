@@ -3,6 +3,7 @@ package sqlw
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/axkit/velum"
@@ -47,6 +48,10 @@ func NewDatabaseWrapper(db *sql.DB) *DatabaseWrapper {
 
 func (w *DatabaseWrapper) DB() *sql.DB {
 	return w.db
+}
+
+func (w *DatabaseWrapper) IsNotFound(err error) bool {
+	return errors.Is(err, sql.ErrNoRows)
 }
 
 func (w *DatabaseWrapper) ExecContext(ctx context.Context, query string, args ...any) (velum.Result, error) {

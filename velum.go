@@ -258,6 +258,7 @@ type DatabaseWrapper interface {
 	Executer
 	QueryRowExecuter
 	QueryExecuter
+	IsNotFound(err error) bool
 	Begin(context.Context) (Transaction, error)
 	InTx(context.Context, func(Transaction) error) error
 }
