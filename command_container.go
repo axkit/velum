@@ -242,8 +242,9 @@ func buildInsertReturning[T any](t *Table[T], argScope, retScope Scope) Returnin
 
 func buildUpdate[T any](t *Table[T], scope Scope, ct clauseType, endingClause string) Command[T] {
 
-	scopes := parseUserScopes(scope)
+	scopes := parseUserScopes(scope, VersionField, UpdateScope)
 	cols := newClause(ct, t, scopes)
+
 	sql := "UPDATE " + t.Name() + " SET " + cols.text
 	if endingClause != "" {
 		sql += " " + endingClause

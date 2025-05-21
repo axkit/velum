@@ -69,8 +69,7 @@ func NewTable[T any](tablename string, opts ...TableOption) *Table[T] {
 		scope:            make(map[scopeKey]clause),
 		ObjPool: &sync.Pool{
 			New: func() any {
-				var v T
-				return &v
+				return new(T)
 			},
 		},
 	}
