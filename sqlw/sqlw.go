@@ -62,35 +62,35 @@ func NewDatabaseWrapper(db *sql.DB) *DatabaseWrapper {
 }
 
 // DB returns the underlying *sql.DB.
-func (w *DatabaseWrapper) DB() *sql.DB {
-	return w.db
+func (dw *DatabaseWrapper) DB() *sql.DB {
+	return dw.db
 }
 
 // IsNotFound reports whether err represents a "no rows" condition
 // (sql.ErrNoRows).
-func (w *DatabaseWrapper) IsNotFound(err error) bool {
+func (dw *DatabaseWrapper) IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
 
 // ExecContext executes a statement that does not return rows.
-func (w *DatabaseWrapper) ExecContext(ctx context.Context, query string, args ...any) (velum.Result, error) {
-	return w.db.ExecContext(ctx, query, args...)
+func (dw *DatabaseWrapper) ExecContext(ctx context.Context, query string, args ...any) (velum.Result, error) {
+	return dw.db.ExecContext(ctx, query, args...)
 }
 
 // QueryContext executes a query that returns multiple rows.
-func (w *DatabaseWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
-	return w.db.QueryContext(ctx, sql, args...)
+func (dw *DatabaseWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
+	return dw.db.QueryContext(ctx, sql, args...)
 }
 
 // QueryRowContext executes a query that returns at most one row.
-func (w *DatabaseWrapper) QueryRowContext(ctx context.Context, sql string, args ...any) velum.Row {
-	return w.db.QueryRowContext(ctx, sql, args...)
+func (dw *DatabaseWrapper) QueryRowContext(ctx context.Context, sql string, args ...any) velum.Row {
+	return dw.db.QueryRowContext(ctx, sql, args...)
 }
 
 // InTx executes fn inside a database/sql transaction. The transaction is
 // committed if fn returns nil; otherwise it is rolled back.
-func (w *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
-	tx, err := w.Begin(ctx)
+func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
+	tx, err := dw.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -106,8 +106,8 @@ func (w *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction
 }
 
 // Begin starts a new database/sql transaction and returns a TransactionWrapper.
-func (w *DatabaseWrapper) Begin(ctx context.Context) (TransactionWrapper, error) {
-	tx, err := w.db.Begin()
+func (dw *DatabaseWrapper) Begin(ctx context.Context) (TransactionWrapper, error) {
+	tx, err := dw.db.BeginTx(ctx, nil)
 	if err != nil {
 		return TransactionWrapper{}, err
 	}
@@ -115,13 +115,13 @@ func (w *DatabaseWrapper) Begin(ctx context.Context) (TransactionWrapper, error)
 }
 
 // Commit commits the transaction.
-func (tx *TransactionWrapper) Commit(ctx context.Context) error {
-	return tx.tx.Commit()
+func (tw *TransactionWrapper) Commit(ctx context.Context) error {
+	return tw.tx.Commit()
 }
 
 // Rollback aborts the transaction.
-func (tx *TransactionWrapper) Rollback(ctx context.Context) error {
-	return tx.tx.Rollback()
+func (tw *TransactionWrapper) Rollback(ctx context.Context) error {
+	return tw.tx.Rollback()
 }
 
 const doPrint = false
