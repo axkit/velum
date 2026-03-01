@@ -395,16 +395,24 @@ func (cc *CommandContanier[T]) DeleteReturning(retScope Scope, clauses string) R
 }
 
 func buildDeleteReturning[T any](t *Table[T], retScope Scope, clauses string) ReturningCommand[T] {
-	ret := t.cc.clause[scopeKey{ct: ctColsCSV, scope: retScope}]
-	cmd := ReturningCommand[T]{
+	rs := parseUserScopes(retScope)
+	rets := newClause(ctColsCSV, t, rs)
+
+	// cpos holds the PK position so QueryRow can extract it from the caller's
+	// struct and bind it to $1 in the WHERE clause (e.g. "WHERE id=$1").
+	var cpos []int
+	if pk := t.PK(); pk != nil {
+		cpos = []int{pk.Pos}
+	}
+
+	return ReturningCommand[T]{
 		Command: Command[T]{
-			sql:  "DELETE FROM " + t.Name() + " " + clauses + " RETURNING " + ret.text,
-			cpos: nil,
+			sql:  "DELETE FROM " + t.Name() + " " + clauses + " RETURNING " + rets.text,
+			cpos: cpos,
 			sfpe: t.cc.sfpe,
 		},
-		rets: ret.cpos,
+		rets: rets.cpos,
 	}
-	return cmd
 }
 
 func (cc *CommandContanier[T]) Func(typ FunctionalCommandEnum, clauses string) FunctionalCommand[T] {

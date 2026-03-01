@@ -2,6 +2,7 @@ package velum
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -95,4 +96,86 @@ func Test_parseUserScopes(t *testing.T) {
 		})
 	}
 
+}
+
+// Test_buildDeleteReturning verifies that buildDeleteReturning produces a
+// correct SQL statement and sets cpos/rets correctly.
+// Previously it read from t.cc.clause (always-empty map) and produced
+// "DELETE FROM t ... RETURNING " with no column names.
+func Test_buildDeleteReturning(t *testing.T) {
+	// testMLRow is defined in memory_leak_test.go (same package).
+	tbl := NewTable[testMLRow]("items")
+
+	tests := []struct {
+		name          string
+		retScope      Scope
+		clauses       string
+		wantSQLPrefix string
+		wantReturning string
+		wantCposLen   int // expected number of entries in Command.cpos (for WHERE args)
+		wantRetsLen   int // expected number of entries in rets (scanned return columns)
+	}{
+		{
+			name:          "FullScope returning all columns",
+			retScope:      FullScope,
+			clauses:       "WHERE id=$1",
+			wantSQLPrefix: "DELETE FROM items WHERE id=$1 RETURNING ",
+			wantReturning: "id,name,age", // all columns
+			wantCposLen:   1,             // PK position for WHERE $1
+			wantRetsLen:   3,             // id, name, age
+		},
+		{
+			// newClause always prepends the PK column (consistent with
+			// buildInsertReturning / buildUpdateReturning), so "age" scope
+			// returns "id,age".
+			name:          "age scope returns id and age",
+			retScope:      "age",
+			clauses:       "WHERE id=$1",
+			wantSQLPrefix: "DELETE FROM items WHERE id=$1 RETURNING ",
+			wantReturning: "id,age",
+			wantCposLen:   1,
+			wantRetsLen:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := buildDeleteReturning(tbl, tt.retScope, tt.clauses)
+
+			wantSQL := tt.wantSQLPrefix + tt.wantReturning
+			if cmd.sql != wantSQL {
+				t.Errorf("sql:\n got  %q\n want %q", cmd.sql, wantSQL)
+			}
+
+			if !strings.HasSuffix(cmd.sql, tt.wantReturning) {
+				t.Errorf("sql does not end with RETURNING columns %q: %q", tt.wantReturning, cmd.sql)
+			}
+
+			if len(cmd.cpos) != tt.wantCposLen {
+				t.Errorf("cpos len: got %d, want %d", len(cmd.cpos), tt.wantCposLen)
+			}
+
+			if len(cmd.rets) != tt.wantRetsLen {
+				t.Errorf("rets len: got %d, want %d", len(cmd.rets), tt.wantRetsLen)
+			}
+		})
+	}
+}
+
+// Test_buildDeleteReturning_NoReturnEmpty verifies the old bug is gone:
+// the RETURNING clause must not be empty.
+func Test_buildDeleteReturning_NotEmpty(t *testing.T) {
+	tbl := NewTable[testMLRow]("items")
+	cmd := buildDeleteReturning(tbl, FullScope, "WHERE id=$1")
+
+	const marker = "RETURNING "
+	idx := strings.Index(cmd.sql, marker)
+	if idx == -1 {
+		t.Fatalf("sql does not contain RETURNING: %q", cmd.sql)
+	}
+	tail := cmd.sql[idx+len(marker):]
+	if tail == "" {
+		t.Errorf("RETURNING clause is empty — bug is still present: %q", cmd.sql)
+	}
+	t.Logf("RETURNING clause: %q", tail)
 }
