@@ -11,10 +11,14 @@ import (
 	"github.com/axkit/velum/reflectx"
 )
 
-// ClauseSet represents a collection of placeholder values keyed by their placeholder name.
+// ClauseSet maps placeholder names to the SQL clause strings that replace them
+// in a Dataset template. Each key must match a /*IDENTIFIER*/ placeholder in
+// the template, or be DatasetTailClause to append SQL after the template body.
 type ClauseSet map[string]string
 
-// DatasetTailClause is the special clause name used to append SQL after the template if not any placeholders are defined.
+// DatasetTailClause is the reserved placeholder name used to append SQL after
+// the template body when no named placeholder is suitable, or when the
+// template contains no placeholders at all.
 const DatasetTailClause = "query_tail_clause"
 
 type datasetTemplate struct {
@@ -52,8 +56,18 @@ func WithDatasetColumnNameBuilder(fn func(string, string) string) DatasetOption 
 	}
 }
 
-// Dataset allows executing arbitrary SELECT statements (joins, aggregates, etc.)
-// while keeping the ability to tweak SQL clauses identified by placeholders.
+// Dataset executes arbitrary SELECT statements — multi-table joins, window
+// functions, CTEs — while keeping the ability to inject SQL clauses at
+// call time through named /*IDENTIFIER*/ placeholders in the template.
+//
+// Dataset is created once at application startup with NewDataset and is safe
+// for concurrent use. Unlike Table, Dataset does not cache compiled queries;
+// each WithClauses call builds a new SelectCommand.
+//
+// The type parameter T must be a struct whose exported fields match the
+// columns returned by the SELECT (matched by column name derived via the
+// struct tag). Fields are discovered using the tag configured by
+// WithDatasetTag (default "dbw").
 type Dataset[T any] struct {
 	template datasetTemplate
 	sfpe     StructFieldPtrExtractor[T]
@@ -64,13 +78,19 @@ type Dataset[T any] struct {
 	cmd SelectCommand[T]
 }
 
-// DatasetQuery represents a compiled dataset statement bound to a ClauseSet.
-// It can be executed multiple times with different arguments without rebuilding SQL.
+// DatasetQuery is a compiled SELECT statement bound to a specific ClauseSet.
+// It can be executed multiple times with different argument values without
+// rebuilding the SQL string.
 type DatasetQuery[T any] struct {
 	cmd SelectCommand[T]
 }
 
-// NewDataset creates a Dataset bound to the provided SELECT statement.
+// NewDataset creates a Dataset for the provided SELECT template. Placeholders
+// in the template take the form /*IDENTIFIER*/ where IDENTIFIER contains only
+// letters, digits, and underscores. Multi-word block comments are left
+// untouched.
+//
+// NewDataset panics if T is not a struct or has no exported fields.
 func NewDataset[T any](statement string, opts ...DatasetOption) *Dataset[T] {
 	cfg := datasetConfig{
 		tag:            DefaultFieldTag,
@@ -99,13 +119,16 @@ func NewDataset[T any](statement string, opts ...DatasetOption) *Dataset[T] {
 	}
 }
 
-// Statement returns the original template statement.
+// Statement returns the original SQL template string as provided to NewDataset.
 func (ds *Dataset[T]) Statement() string {
 	return ds.template.statement
 }
 
-// CommandWithClauses builds (or reuses) a SelectCommand for the provided ClauseSet.
-// Unknown clause names panic.
+// CommandWithClauses builds a SelectCommand by rendering the template with the
+// provided ClauseSet. $N parameters in each clause are automatically
+// renumbered so they do not collide with parameters already present in the
+// template. Panics if cs contains a key that is not a placeholder in the
+// template and is not DatasetTailClause.
 func (ds *Dataset[T]) CommandWithClauses(cs ClauseSet) SelectCommand[T] {
 
 	sql := ds.template.render(cs)
@@ -117,44 +140,64 @@ func (ds *Dataset[T]) CommandWithClauses(cs ClauseSet) SelectCommand[T] {
 
 }
 
-// Command keeps backward compatibility by appending the provided clauses after the statement.
+// Command appends tailClause after the template body. It is a convenience
+// wrapper around CommandWithClauses for templates without named placeholders.
 func (ds *Dataset[T]) Command(tailClause string) SelectCommand[T] {
 	return ds.CommandWithClauses(ClauseSet{DatasetTailClause: tailClause})
 }
 
-// Get executes using the default clause set (if any).
+// Get executes the template with no clause overrides and returns the single
+// matching row as a newly allocated *T.
 func (ds *Dataset[T]) Get(ctx context.Context, q QueryRowExecuter, args ...any) (*T, error) {
 	cmd := ds.CommandWithClauses(nil)
 	return cmd.Get(ctx, q, args...)
 }
 
-// Select executes using the default clause set (if any) and returns all rows.
+// Select executes the template with no clause overrides and returns all
+// matching rows.
 func (ds *Dataset[T]) Select(ctx context.Context, q QueryExecuter, args ...any) ([]T, error) {
 	cmd := ds.CommandWithClauses(nil)
 	return cmd.GetMany(ctx, q, args...)
 }
 
-// WithClauses creates a reusable DatasetQuery bound to the provided ClauseSet.
+// WithClauses compiles the template with the provided ClauseSet and returns a
+// reusable DatasetQuery. Build it once; call its Get or Select many times with
+// different argument values.
+//
+//	recent := ds.WithClauses(velum.ClauseSet{
+//	    "WHERE_FILTER": "WHERE paid_at > $1",
+//	    "ORDER_BY":     "ORDER BY paid_at DESC",
+//	})
+//	rows, err := recent.Select(ctx, dbw, yesterday)
 func (ds *Dataset[T]) WithClauses(clauses ClauseSet) DatasetQuery[T] {
 	return DatasetQuery[T]{cmd: ds.CommandWithClauses(clauses)}
 }
 
-// WithNamedClause creates a reusable DatasetQuery for a single placeholder.
+// WithNamedClause compiles the template with a single named placeholder
+// replaced by clause and returns a reusable DatasetQuery.
+//
+//	q := ds.WithNamedClause("WHERE_FILTER", "WHERE id = $1")
+//	row, err := q.Get(ctx, dbw, id)
 func (ds *Dataset[T]) WithNamedClause(name, clause string) DatasetQuery[T] {
 	return ds.WithClauses(ClauseSet{name: clause})
 }
 
-// WithTailClause creates a reusable DatasetQuery for a single placeholder.
+// WithTailClause compiles the template with the tail clause appended after
+// the template body and returns a reusable DatasetQuery.
+//
+//	rows, err := ds.WithTailClause("ORDER BY paid_at DESC LIMIT 10").Select(ctx, dbw)
 func (ds *Dataset[T]) WithTailClause(clause string) DatasetQuery[T] {
 	return ds.WithClauses(ClauseSet{DatasetTailClause: clause})
 }
 
-// Get executes the compiled query.
+// Get executes the compiled query and returns the single matching row as a
+// newly allocated *T. It returns sql.ErrNoRows when no row is found.
 func (dq DatasetQuery[T]) Get(ctx context.Context, q QueryRowExecuter, args ...any) (*T, error) {
 	return dq.cmd.Get(ctx, q, args...)
 }
 
-// Select executes the compiled query and returns all rows.
+// Select executes the compiled query and returns all matching rows. It returns
+// a nil slice (not an error) when no rows are found.
 func (dq DatasetQuery[T]) Select(ctx context.Context, q QueryExecuter, args ...any) ([]T, error) {
 	return dq.cmd.GetMany(ctx, q, args...)
 }

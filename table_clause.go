@@ -49,10 +49,19 @@ type clause struct {
 	typ  clauseType
 }
 
+// Tabler is implemented by Table[T] and provides the subset of Table
+// capabilities needed to build SQL clauses. It is used internally by
+// CommandContanier so that clause-building functions remain generic
+// without importing the full Table type.
 type Tabler interface {
+	// Name returns the database table name.
 	Name() string
+	// Columns returns all columns derived from the struct T.
 	Columns() []Column
+	// PK returns the primary-key column descriptor, or nil if the table has none.
 	PK() *SystemColumn
+	// FormatArg formats argument position pos (1-based) as a driver-specific
+	// placeholder (e.g. "$1" for PostgreSQL).
 	FormatArg(int) string
 }
 
