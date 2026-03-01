@@ -10,7 +10,7 @@ const (
 	ctColsPrefixedCSV
 	// ctArgsInsert: $1, $2, $3 or nextval('seq'), $2, $3, or DEFAULT, $1, $2, etc.
 	ctArgsInsert
-	// ctColsUpdateByPK: name=$2, age=$3 (keeps $1 for PK in the 'where cause')
+	// ctColsUpdateByPK: name=$2, age=$3 (keeps $1 for PK in the 'where clause')
 	ctColsUpdateByPK
 	// ctColsUpdate: name=$1, age=$2, ssn=$3 (no PK)
 	ctColsUpdate

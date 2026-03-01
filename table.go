@@ -23,7 +23,6 @@ type Table[T any] struct {
 
 	cfg TableConfig
 
-	zero            T
 	uniqueScopeName map[Scope]struct{}
 	scope           map[scopeKey]clause
 
@@ -145,25 +144,19 @@ func (t *Table[T]) ScopeContainer() map[scopeKey]clause {
 
 func (t *Table[T]) init() error {
 
-	structFields := reflectx.ExtractStructFields(&t.zero, t.cfg.tag)
+	var zero T
 
-	t.initColumns(structFields)
+	structFields := reflectx.ExtractStructFields(&zero, t.cfg.tag)
+
+	t.columns = buildColumnsFromFields(structFields, t.cfg.colNameBuilder)
 	t.initPrimaryKeyColumn()
 	t.initColumnValueGenerationRules()
 	t.initSystemColumns()
 	t.initUniqueScopeNames()
-	t.initPool()
+	t.pool = newPointerSlicePool[T](t.columns)
 	t.cc = NewCommandContainer(t, t.pool, t.scope, t.cfg.argFormatter)
 	t.initFrequentCommands()
 	return nil
-}
-
-func (t *Table[T]) initPool() {
-	fic := reflectx.NewFieldIndexContainer(len(t.columns) + 2)
-	for i := range t.columns {
-		fic.Add(t.columns[i].Path)
-	}
-	t.pool = reflectx.NewPointerSlicePool[T](fic)
 }
 
 func (t *Table[T]) initFrequentCommands() {
@@ -174,22 +167,6 @@ func (t *Table[T]) initFrequentCommands() {
 		t.freqCmd.updateAllFieldsByPK = t.cc.UpdateReturning(FullScope, FullScope, ByPK())
 		t.freqCmd.deleteByPK = "DELETE FROM " + t.name + " " + t.wherePkClause
 		t.freqCmd.softDeleteByPK = t.cc.UpdateReturning(DeleteScope, SystemScope, ByPK())
-	}
-}
-
-func (t *Table[T]) initColumns(structFields []reflectx.StructField) {
-
-	t.columns = make([]Column, len(structFields))
-	for i, sf := range structFields {
-
-		ptag := reflectx.ParseTagPairs(sf.Tag, scopeTagKey)
-		ptag.Add(scopeTagKey, string(FullScope))
-
-		t.columns[i] = Column{
-			Path: sf.Path,
-			Name: t.cfg.colNameBuilder(sf.Name, sf.Tag),
-			Tag:  ptag,
-		}
 	}
 }
 

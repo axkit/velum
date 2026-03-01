@@ -84,3 +84,28 @@ func colValueGenMethod(genOptVal string) (method ColumnValueGenMethod, value str
 	}
 	return CustomSequece, genOptVal
 }
+
+// buildColumnsFromFields converts extracted struct fields to Column descriptors.
+func buildColumnsFromFields(structFields []reflectx.StructField, colNameBuilder func(string, string) string) []Column {
+	columns := make([]Column, len(structFields))
+	for i, sf := range structFields {
+		ptag := reflectx.ParseTagPairs(sf.Tag, scopeTagKey)
+		ptag.Add(scopeTagKey, string(FullScope))
+
+		columns[i] = Column{
+			Path: sf.Path,
+			Name: colNameBuilder(sf.Name, sf.Tag),
+			Tag:  ptag,
+		}
+	}
+	return columns
+}
+
+// newPointerSlicePool builds a pointer slice pool for the provided columns.
+func newPointerSlicePool[T any](columns []Column) *reflectx.PointerSlicePool[T] {
+	fic := reflectx.NewFieldIndexContainer(len(columns) + 2)
+	for i := range columns {
+		fic.Add(columns[i].Path)
+	}
+	return reflectx.NewPointerSlicePool[T](fic)
+}

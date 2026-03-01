@@ -24,6 +24,14 @@ type Command[T any] struct {
 	sfpe StructFieldPtrExtractor[T]
 }
 
+func NewCommand[T any](sql string, sfpe StructFieldPtrExtractor[T], cpos []int) Command[T] {
+	return Command[T]{
+		sql:  sql,
+		cpos: cpos,
+		sfpe: sfpe,
+	}
+}
+
 type SelectCommand[T any] Command[T]
 
 type ReturningCommand[T any] struct {
