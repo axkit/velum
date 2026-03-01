@@ -36,7 +36,7 @@ type SystemColumn struct {
 // When true, the column is omitted from the INSERT argument list.
 func (c *Column) IsValueGeneratedByDB() bool {
 	v := c.ValueGenerationMethod
-	return v == SerialFieleType || v == UuidFileType || v == FriendlySequence || v == CustomSequece
+	return v == SerialFieldType || v == UuidFieldType || v == FriendlySequence || v == CustomSequence
 }
 
 // IsSystem reports whether the column belongs to at least one system scope
@@ -57,9 +57,9 @@ func (c *Column) IsSystem() bool {
 // application-provided values it returns regularParam (e.g. "$1").
 func InsertArgument(genMethod ColumnValueGenMethod, valueGenerator string, regularParam string) (sqlParam string) {
 	switch genMethod {
-	case SerialFieleType:
+	case SerialFieldType:
 		return "DEFAULT"
-	case UuidFileType:
+	case UuidFieldType:
 		return "gen_random_uuid()"
 	case NoSequence:
 		return regularParam
@@ -77,16 +77,16 @@ func pkColValueGenMethod(genOptVal string, friendlySequence string) (method Colu
 
 func colValueGenMethod(genOptVal string) (method ColumnValueGenMethod, value string) {
 	switch ColumnValueGenMethod(genOptVal) {
-	case SerialFieleType:
-		return SerialFieleType, "DEFAULT"
-	case UuidFileType:
-		return UuidFileType, "gen_random_uuid()"
+	case SerialFieldType:
+		return SerialFieldType, "DEFAULT"
+	case UuidFieldType:
+		return UuidFieldType, "gen_random_uuid()"
 	case NoSequence:
 		return NoSequence, ""
 	case "":
 		return NoSequence, ""
 	}
-	return CustomSequece, genOptVal
+	return CustomSequence, genOptVal
 }
 
 // buildColumnsFromFields converts the extracted struct field descriptors into
