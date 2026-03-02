@@ -255,7 +255,7 @@ func buildInsertReturning[T any](t *Table[T], argScope, retScope Scope) Returnin
 
 	as := parseUserScopes(argScope, VersionField, InsertScope)
 	rs := as
-	if retScope != EmptyScope || retScope != argScope {
+	if retScope != EmptyScope && retScope != argScope {
 		rs = parseUserScopes(retScope, VersionField, InsertScope)
 	}
 

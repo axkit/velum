@@ -60,10 +60,9 @@ type Table[T any] struct {
 		selectAllFieldsByPK SelectCommand[T]
 		updateAllFieldsByPK ReturningCommand[T]
 		insertAllFields     ReturningCommand[T]
-		softDeleteByPK      ReturningCommand[T]
-		touchByPK           ReturningCommand[T]
-		deleteByPK          string
+		softDeleteByPK      ReturningCommand[T] // used by SoftDeleteReturningByPK
 		deleteRetAllByPK    ReturningCommand[T]
+		deleteByPK          string
 	}
 }
 
@@ -519,19 +518,7 @@ func (t *Table[T]) SoftDeleteByPK(ctx context.Context, q Executer, row *T) (Resu
 // all system-scope columns (version, insert, update, delete) from the updated
 // row as a newly allocated *T.
 func (t *Table[T]) SoftDeleteReturningByPK(ctx context.Context, q QueryRowExecuter, row *T) (*T, error) {
-	cmd := t.cc.UpdateReturning(DeleteScope, SystemScope, ByPK())
-	return cmd.QueryRow(ctx, q, row)
-}
-
-// TouchByPK increments the version column and updates the "update" scope
-// columns (e.g. updated_at) without modifying any data columns. It uses the
-// primary key as the WHERE condition.
-//
-//	tbl.TouchByPK(ctx, dbw, &row)
-//	// UPDATE tablename SET row_version=row_version+1, updated_at=$2 WHERE id=$1
-func (t *Table[T]) TouchByPK(ctx context.Context, q Executer, row *T) (Result, error) {
-	cmd := t.cc.Update(UpdateScope, ByPK())
-	return cmd.Exec(ctx, q, row)
+	return t.freqCmd.softDeleteByPK.QueryRow(ctx, q, row)
 }
 
 // Exist reports whether at least one row matching the provided SQL clause

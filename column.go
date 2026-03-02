@@ -16,7 +16,7 @@ type Column struct {
 	Tag reflectx.TagPairs
 	// ValueGenerationMethod describes how the column's value is produced on
 	// INSERT (relevant only for primary key columns).
-	ValueGenerationMethod ColumnValueGenMethod
+	ValueGenerationMethod PkColumnValueGenMenthod
 	// ValueGenerator holds the sequence name or function expression used when
 	// ValueGenerationMethod is FriendlySequence or CustomSequece.
 	ValueGenerator string
@@ -55,7 +55,7 @@ func (c *Column) IsSystem() bool {
 // clause of an INSERT statement. For database-generated values it returns the
 // appropriate expression (DEFAULT, gen_random_uuid(), nextval(...)); for
 // application-provided values it returns regularParam (e.g. "$1").
-func InsertArgument(genMethod ColumnValueGenMethod, valueGenerator string, regularParam string) (sqlParam string) {
+func InsertArgument(genMethod PkColumnValueGenMenthod, valueGenerator string, regularParam string) (sqlParam string) {
 	switch genMethod {
 	case SerialFieldType:
 		return "DEFAULT"
@@ -68,15 +68,15 @@ func InsertArgument(genMethod ColumnValueGenMethod, valueGenerator string, regul
 	return "nextval('" + valueGenerator + "')"
 }
 
-func pkColValueGenMethod(genOptVal string, friendlySequence string) (method ColumnValueGenMethod, value string) {
+func pkColValueGenMethod(genOptVal string, friendlySequence string) (method PkColumnValueGenMenthod, value string) {
 	if genOptVal == "" {
 		return FriendlySequence, friendlySequence
 	}
 	return colValueGenMethod(genOptVal)
 }
 
-func colValueGenMethod(genOptVal string) (method ColumnValueGenMethod, value string) {
-	switch ColumnValueGenMethod(genOptVal) {
+func colValueGenMethod(genOptVal string) (method PkColumnValueGenMenthod, value string) {
+	switch PkColumnValueGenMenthod(genOptVal) {
 	case SerialFieldType:
 		return SerialFieldType, "DEFAULT"
 	case UuidFieldType:

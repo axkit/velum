@@ -94,7 +94,7 @@ func Test_IsSystem(t *testing.T) {
 func Test_InsertArgument(t *testing.T) {
 	tests := []struct {
 		name           string
-		genMethod      ColumnValueGenMethod
+		genMethod      PkColumnValueGenMenthod
 		valueGenerator string
 		regularParam   string
 		want           string
@@ -141,7 +141,7 @@ func Test_colValueGenMethod(t *testing.T) {
 	tests := []struct {
 		name       string
 		genOptVal  string
-		wantMethod ColumnValueGenMethod
+		wantMethod PkColumnValueGenMenthod
 		wantValue  string
 	}{
 		{

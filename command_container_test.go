@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// testSysRow has system columns so TouchByPK and SoftDeleteReturningByPK
+// generate non-trivial SQL that can be inspected in tests.
+type testSysRow struct {
+	ID         int  `dbw:"gen=serial"`
+	Name       string
+	RowVersion int  `dbw:"version"`
+	UpdatedInt int  `dbw:"update"` // int rather than time.Time to avoid extra imports
+	DeletedInt int  `dbw:"delete"`
+}
+
 func Test_parseUserScopes(t *testing.T) {
 
 	// cols := []Column{
@@ -178,4 +188,114 @@ func Test_buildDeleteReturning_NotEmpty(t *testing.T) {
 		t.Errorf("RETURNING clause is empty — bug is still present: %q", cmd.sql)
 	}
 	t.Logf("RETURNING clause: %q", tail)
+}
+
+// ── Bug 1: buildInsertReturning used || instead of && ─────────────────────────
+
+// Test_buildInsertReturning_ScopesAppliedCorrectly verifies that the INSERT
+// argument columns follow argScope and the RETURNING columns follow retScope
+// independently when the two scopes differ.
+//
+// Before the fix (|| condition), rs was always rebuilt from retScope, making
+// the optimisation branch (rs = as) dead code. The most observable impact was
+// that when retScope == EmptyScope the RETURNING clause wrongly used system-only
+// columns instead of argScope's columns.
+func Test_buildInsertReturning_ScopesAppliedCorrectly(t *testing.T) {
+	tbl := NewTable[testMLRow]("items")
+
+	tests := []struct {
+		name          string
+		argScope      Scope
+		retScope      Scope
+		wantInsertCSV string // comma-separated list inside VALUES(...)
+		wantReturning string // text after RETURNING
+	}{
+		{
+			// When both scopes are identical the optimisation reuses the
+			// already-parsed scopeSet without redundant work.
+			name:          "same scope: INSERT args and RETURNING both use FullScope",
+			argScope:      FullScope,
+			retScope:      FullScope,
+			wantInsertCSV: "DEFAULT,$1,$2", // id=DEFAULT (serial), name=$1, age=$2
+			wantReturning: "id,name,age",
+		},
+		{
+			// retScope="age" → RETURNING should contain only id+age,
+			// while the INSERT still writes all FullScope columns.
+			name:          "different scopes: INSERT uses FullScope, RETURNING uses age scope",
+			argScope:      FullScope,
+			retScope:      "age",
+			wantInsertCSV: "DEFAULT,$1,$2",
+			wantReturning: "id,age",
+		},
+		{
+			// argScope="age" → INSERT writes only id+age,
+			// retScope=FullScope → RETURNING reads all columns.
+			name:          "different scopes: INSERT uses age scope, RETURNING uses FullScope",
+			argScope:      "age",
+			retScope:      FullScope,
+			wantInsertCSV: "DEFAULT,$1", // id=DEFAULT, age=$1
+			wantReturning: "id,name,age",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := buildInsertReturning(tbl, tt.argScope, tt.retScope)
+
+			// Verify INSERT VALUES clause.
+			valStart := strings.Index(cmd.sql, "VALUES (")
+			valEnd := strings.Index(cmd.sql, ") RETURNING")
+			if valStart == -1 || valEnd == -1 {
+				t.Fatalf("could not locate VALUES(...) in sql: %q", cmd.sql)
+			}
+			gotValues := cmd.sql[valStart+len("VALUES (") : valEnd]
+			if gotValues != tt.wantInsertCSV {
+				t.Errorf("VALUES = %q, want %q (full sql: %q)",
+					gotValues, tt.wantInsertCSV, cmd.sql)
+			}
+
+			// Verify RETURNING clause.
+			const marker = "RETURNING "
+			idx := strings.Index(cmd.sql, marker)
+			if idx == -1 {
+				t.Fatalf("RETURNING not found in sql: %q", cmd.sql)
+			}
+			gotReturning := cmd.sql[idx+len(marker):]
+			if gotReturning != tt.wantReturning {
+				t.Errorf("RETURNING = %q, want %q (full sql: %q)",
+					gotReturning, tt.wantReturning, cmd.sql)
+			}
+		})
+	}
+}
+
+// ── Bug 3: freqCmd.softDeleteByPK built but not wired to SoftDeleteReturningByPK
+
+// Test_freqCmd_softDeleteByPK_UsedBySoftDeleteReturningByPK verifies that the
+// SQL inside freqCmd.softDeleteByPK matches what SoftDeleteReturningByPK now
+// executes directly, confirming the pre-built command is actually wired in.
+func Test_freqCmd_softDeleteByPK_UsedBySoftDeleteReturningByPK(t *testing.T) {
+	tbl := NewTable[testSysRow]("things")
+
+	if tbl.freqCmd.softDeleteByPK.sql == "" {
+		t.Fatal("freqCmd.softDeleteByPK.sql is empty")
+	}
+
+	// The pre-built command must match cc.UpdateReturning(DeleteScope, SystemScope, ByPK()).
+	want := tbl.cc.UpdateReturning(DeleteScope, SystemScope, ByPK())
+	if tbl.freqCmd.softDeleteByPK.sql != want.sql {
+		t.Errorf("freqCmd.softDeleteByPK.sql:\n got  %q\n want %q",
+			tbl.freqCmd.softDeleteByPK.sql, want.sql)
+	}
+	if !reflect.DeepEqual(tbl.freqCmd.softDeleteByPK.rets, want.rets) {
+		t.Errorf("freqCmd.softDeleteByPK.rets: got %v, want %v",
+			tbl.freqCmd.softDeleteByPK.rets, want.rets)
+	}
+
+	// The SQL must contain RETURNING (it is a ReturningCommand, not a plain DELETE).
+	if !strings.Contains(tbl.freqCmd.softDeleteByPK.sql, "RETURNING") {
+		t.Errorf("expected RETURNING in softDeleteByPK sql: %q",
+			tbl.freqCmd.softDeleteByPK.sql)
+	}
 }
