@@ -128,7 +128,7 @@ func newClauseWithPK(ct clauseType, pk *SystemColumn, pkArgValue string) clause 
 		return clause{typ: ct}
 	}
 
-	panic("unknown clause type")
+	panic("velum: unknown clause type")
 }
 
 // join appends the text to the existing text.

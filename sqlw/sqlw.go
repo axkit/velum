@@ -1,10 +1,12 @@
+// Package sqlw adapts *sql.DB and *sql.Tx from the standard database/sql
+// package to the velum.DatabaseWrapper and velum.Transaction interfaces.
+// Use NewDatabaseWrapper to create a wrapper around an existing *sql.DB.
 package sqlw
 
 import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/axkit/velum"
 )
@@ -39,8 +41,8 @@ type ResultWrapper struct {
 }
 
 // RowsAffected returns the number of rows affected by the statement.
-func (r *ResultWrapper) RowsAffected() (int64, error) {
-	return r.rowsAffected, nil
+func (rw *ResultWrapper) RowsAffected() (int64, error) {
+	return rw.rowsAffected, nil
 }
 
 // RowWrapper wraps *sql.Row to implement velum.Row. It adds the Err() method
@@ -77,14 +79,14 @@ func (dw *DatabaseWrapper) ExecContext(ctx context.Context, query string, args .
 	return dw.db.ExecContext(ctx, query, args...)
 }
 
-// QueryContext executes a query that returns multiple rows.
-func (dw *DatabaseWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
-	return dw.db.QueryContext(ctx, sql, args...)
-}
-
 // QueryRowContext executes a query that returns at most one row.
 func (dw *DatabaseWrapper) QueryRowContext(ctx context.Context, sql string, args ...any) velum.Row {
 	return dw.db.QueryRowContext(ctx, sql, args...)
+}
+
+// QueryContext executes a query that returns multiple rows.
+func (dw *DatabaseWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
+	return dw.db.QueryContext(ctx, sql, args...)
 }
 
 // InTx executes fn inside a database/sql transaction. The transaction is
@@ -128,24 +130,15 @@ const doPrint = false
 
 // ExecContext executes a statement inside the transaction that does not return rows.
 func (tw *TransactionWrapper) ExecContext(ctx context.Context, sql string, args ...any) (velum.Result, error) {
-	if doPrint {
-		fmt.Printf("TransactionWrapper.ExecContext: %d: %s\n", len(args), sql)
-	}
 	return tw.tx.ExecContext(ctx, sql, args...)
-}
-
-// QueryContext executes a query inside the transaction that returns multiple rows.
-func (tw *TransactionWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
-	if doPrint {
-		fmt.Printf("TransactionWrapper.QueryContext: %d: %s\n", len(args), sql)
-	}
-	return tw.tx.QueryContext(ctx, sql, args...)
 }
 
 // QueryRowContext executes a query inside the transaction that returns at most one row.
 func (tw *TransactionWrapper) QueryRowContext(ctx context.Context, sql string, args ...any) velum.Row {
-	if doPrint {
-		fmt.Printf("TransactionWrapper.QueryRowContext: %d: %s\n", len(args), sql)
-	}
 	return tw.tx.QueryRowContext(ctx, sql, args...)
+}
+
+// QueryContext executes a query inside the transaction that returns multiple rows.
+func (tw *TransactionWrapper) QueryContext(ctx context.Context, sql string, args ...any) (velum.Rows, error) {
+	return tw.tx.QueryContext(ctx, sql, args...)
 }

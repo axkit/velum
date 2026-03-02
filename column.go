@@ -16,9 +16,9 @@ type Column struct {
 	Tag reflectx.TagPairs
 	// ValueGenerationMethod describes how the column's value is produced on
 	// INSERT (relevant only for primary key columns).
-	ValueGenerationMethod PkColumnValueGenMenthod
+	ValueGenerationMethod PkColumnValueGenMethod
 	// ValueGenerator holds the sequence name or function expression used when
-	// ValueGenerationMethod is FriendlySequence or CustomSequece.
+	// ValueGenerationMethod is FriendlySequence or CustomSequence.
 	ValueGenerator string
 }
 
@@ -55,7 +55,7 @@ func (c *Column) IsSystem() bool {
 // clause of an INSERT statement. For database-generated values it returns the
 // appropriate expression (DEFAULT, gen_random_uuid(), nextval(...)); for
 // application-provided values it returns regularParam (e.g. "$1").
-func InsertArgument(genMethod PkColumnValueGenMenthod, valueGenerator string, regularParam string) (sqlParam string) {
+func InsertArgument(genMethod PkColumnValueGenMethod, valueGenerator string, regularParam string) (sqlParam string) {
 	switch genMethod {
 	case SerialFieldType:
 		return "DEFAULT"
@@ -64,19 +64,19 @@ func InsertArgument(genMethod PkColumnValueGenMenthod, valueGenerator string, re
 	case NoSequence:
 		return regularParam
 	}
-	// CustomSequece and FriendlySequence both use nextval.
+	// CustomSequence and FriendlySequence both use nextval.
 	return "nextval('" + valueGenerator + "')"
 }
 
-func pkColValueGenMethod(genOptVal string, friendlySequence string) (method PkColumnValueGenMenthod, value string) {
+func pkColValueGenMethod(genOptVal string, friendlySequence string) (method PkColumnValueGenMethod, value string) {
 	if genOptVal == "" {
 		return FriendlySequence, friendlySequence
 	}
 	return colValueGenMethod(genOptVal)
 }
 
-func colValueGenMethod(genOptVal string) (method PkColumnValueGenMenthod, value string) {
-	switch PkColumnValueGenMenthod(genOptVal) {
+func colValueGenMethod(genOptVal string) (method PkColumnValueGenMethod, value string) {
+	switch PkColumnValueGenMethod(genOptVal) {
 	case SerialFieldType:
 		return SerialFieldType, "DEFAULT"
 	case UuidFieldType:

@@ -13,12 +13,12 @@ var (
 	// ErrNoPrimaryKey is returned by Table methods that require a primary key
 	// (GetByPK, DeleteByPK, ExistByPK, etc.) when the struct T has no field
 	// named "id" and no field tagged with dbw:"pk".
-	ErrNoPrimaryKey = errors.New("no primary key defined")
+	ErrNoPrimaryKey = errors.New("velum: no primary key defined")
 
 	// ErrInvalidScopePair is returned when the combination of SET scope and
 	// RETURNING scope produces an empty column list (e.g. both are EmptyScope
 	// when at least one must select columns).
-	ErrInvalidScopePair = errors.New("invalid scope pair")
+	ErrInvalidScopePair = errors.New("velum: invalid scope pair")
 )
 
 // Table is the central descriptor for a single database table. It is created
@@ -49,10 +49,10 @@ type Table[T any] struct {
 	}
 
 	pool *reflectx.PointerSlicePool[T]
-	// ObjPool is a sync.Pool of *T values. It is exposed for advanced callers
+	// objPool is a sync.Pool of *T values. It is exposed for advanced callers
 	// that want to borrow and return struct instances manually (see Object and
 	// ObjectPut). In normal usage, CRUD methods manage the pool internally.
-	ObjPool *sync.Pool
+	objPool *sync.Pool
 
 	cc            *CommandContanier[T]
 	wherePkClause string
@@ -93,7 +93,7 @@ func NewTable[T any](tablename string, opts ...TableOption) *Table[T] {
 		cfg:              cfg,
 		friendlySequence: cfg.seqNameBuilder(tablename),
 		scope:            make(map[scopeKey]clause),
-		ObjPool: &sync.Pool{
+		objPool: &sync.Pool{
 			New: func() any {
 				return new(T)
 			},
@@ -124,14 +124,14 @@ func (t *Table[T]) CommandContainer() *CommandContanier[T] {
 // parameter is accepted for forward compatibility but is currently unused;
 // the returned pointer slice always covers FullScope columns.
 func (t *Table[T]) Object(scope Scope) (*T, *[]any) {
-	c := t.ObjPool.Get().(*T)
+	c := t.objPool.Get().(*T)
 	return c, t.pool.StructFieldPtrs(c, t.freqCmd.selectAllFieldsByPK.cpos)
 }
 
 // ObjectPut returns v and ptrs to their respective pools. It must be called
 // exactly once for every Object call to avoid memory leaks.
 func (t *Table[T]) ObjectPut(v *T, ptrs *[]any) {
-	t.ObjPool.Put(v)
+	t.objPool.Put(v)
 	t.pool.Release(ptrs)
 }
 
@@ -342,7 +342,7 @@ func (t *Table[T]) Scope(s string) Scope {
 		}
 	}
 
-	panic("invalid scope: " + s)
+	panic("velum: invalid scope: " + s)
 }
 
 // GetByPK executes a SELECT with FullScope and returns the single row whose
@@ -356,13 +356,13 @@ func (t *Table[T]) GetByPK(ctx context.Context, q QueryRowExecuter, pk any) (*T,
 	return t.freqCmd.selectAllFieldsByPK.Get(ctx, q, pk)
 }
 
-// GetTo executes a full-scope SELECT by primary key and scans the result row
+// GetByPKTo executes a full-scope SELECT by primary key and scans the result row
 // into the caller-provided dst slice of pointers. dst must contain one pointer
 // per column in FullScope, in column order.
 //
 // Use this when you want to control scan destinations without allocating a new
 // struct (e.g. when reusing pooled result objects externally).
-func (t *Table[T]) GetTo(ctx context.Context, q QueryRowExecuter, dst []any, pk any) error {
+func (t *Table[T]) GetByPKTo(ctx context.Context, q QueryRowExecuter, dst []any, pk any) error {
 	return t.freqCmd.selectAllFieldsByPK.GetToPtr(ctx, q, dst, pk)
 }
 

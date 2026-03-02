@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+// dsTestRow is a minimal struct used by dataset unit tests below.
+type dsTestRow struct {
+	ID   int
+	Name string
+}
+
 // testSysRow has system columns so TouchByPK and SoftDeleteReturningByPK
 // generate non-trivial SQL that can be inspected in tests.
 type testSysRow struct {
@@ -190,7 +196,7 @@ func Test_buildDeleteReturning_NotEmpty(t *testing.T) {
 	t.Logf("RETURNING clause: %q", tail)
 }
 
-// ── Bug 1: buildInsertReturning used || instead of && ─────────────────────────
+// --- Bug 1: buildInsertReturning used || instead of && ---
 
 // Test_buildInsertReturning_ScopesAppliedCorrectly verifies that the INSERT
 // argument columns follow argScope and the RETURNING columns follow retScope
@@ -270,7 +276,7 @@ func Test_buildInsertReturning_ScopesAppliedCorrectly(t *testing.T) {
 	}
 }
 
-// ── Bug 3: freqCmd.softDeleteByPK built but not wired to SoftDeleteReturningByPK
+// --- Bug 3: freqCmd.softDeleteByPK built but not wired to SoftDeleteReturningByPK ---
 
 // Test_freqCmd_softDeleteByPK_UsedBySoftDeleteReturningByPK verifies that the
 // SQL inside freqCmd.softDeleteByPK matches what SoftDeleteReturningByPK now
@@ -297,5 +303,179 @@ func Test_freqCmd_softDeleteByPK_UsedBySoftDeleteReturningByPK(t *testing.T) {
 	if !strings.Contains(tbl.freqCmd.softDeleteByPK.sql, "RETURNING") {
 		t.Errorf("expected RETURNING in softDeleteByPK sql: %q",
 			tbl.freqCmd.softDeleteByPK.sql)
+	}
+}
+
+func TestNewDatasetTemplate_UnmatchedPlaceholder(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for unmatched /*, got none")
+		}
+	}()
+	newDatasetTemplate("SELECT /* no closing")
+}
+
+func TestNewDatasetTemplate_EmptyPlaceholderName(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for empty placeholder name, got none")
+		}
+	}()
+	newDatasetTemplate("SELECT /* */ FROM t")
+}
+
+func TestIsPlaceholderToken(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"valid", "WHERE_FILTER", true},
+		{"valid with digits", "FILTER_1", true},
+		{"dash rejected", "my-filter", false},
+		{"dot rejected", "filter.name", false},
+		{"space rejected", "has space", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPlaceholderToken(tt.in); got != tt.want {
+				t.Errorf("isPlaceholderToken(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeClause(t *testing.T) {
+	tests := []struct {
+		name         string
+		clause       string
+		nextArg      int
+		wantClause   string
+		wantConsumed int
+	}{
+		{
+			name:         "no placeholders",
+			clause:       "ORDER BY id",
+			nextArg:      5,
+			wantClause:   "ORDER BY id",
+			wantConsumed: 0,
+		},
+		{
+			name:         "nextArg is 1 - no shift needed",
+			clause:       "WHERE id = $1",
+			nextArg:      1,
+			wantClause:   "WHERE id = $1",
+			wantConsumed: 1,
+		},
+		{
+			name:         "shift from $1 to $3",
+			clause:       "AND age > $1",
+			nextArg:      3,
+			wantClause:   "AND age > $3",
+			wantConsumed: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotClause, gotConsumed := normalizeClause(tt.clause, tt.nextArg)
+			if gotClause != tt.wantClause {
+				t.Errorf("clause = %q, want %q", gotClause, tt.wantClause)
+			}
+			if gotConsumed != tt.wantConsumed {
+				t.Errorf("consumed = %d, want %d", gotConsumed, tt.wantConsumed)
+			}
+		})
+	}
+}
+
+func TestStartsWithWhitespace(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{" text", true},
+		{"\ntext", true},
+		{"\ttext", true},
+		{"\rtext", true},
+		{"text", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := startsWithWhitespace(tt.in)
+		if got != tt.want {
+			t.Errorf("startsWithWhitespace(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestMaxPlaceholderIndex(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want int
+	}{
+		{"SELECT id FROM t WHERE id=$1 AND age=$2", 2},
+		{"SELECT id FROM t", 0},
+		{"WHERE id=$3 AND name=$1", 3},
+	}
+	for _, tt := range tests {
+		got := maxPlaceholderIndex(tt.sql)
+		if got != tt.want {
+			t.Errorf("maxPlaceholderIndex(%q) = %d, want %d", tt.sql, got, tt.want)
+		}
+	}
+}
+
+func TestDatasetColumnPositions_Empty(t *testing.T) {
+	_, err := datasetColumnPositions(nil)
+	if err == nil {
+		t.Error("expected error for empty columns, got nil")
+	}
+}
+
+func TestMergeClauses_EmptyOverrides(t *testing.T) {
+	ds := NewDataset[dsTestRow]("SELECT id, name FROM t /*WHERE_FILTER*/")
+	result := ds.mergeClauses(ClauseSet{})
+	if result == nil {
+		t.Error("mergeClauses with empty overrides returned nil")
+	}
+}
+
+func TestMergeClauses_ValidOverride(t *testing.T) {
+	ds := NewDataset[dsTestRow]("SELECT id, name FROM t /*WHERE_FILTER*/")
+	result := ds.mergeClauses(ClauseSet{"WHERE_FILTER": "WHERE id = $1"})
+	if result["WHERE_FILTER"] != "WHERE id = $1" {
+		t.Errorf("mergeClauses result[WHERE_FILTER] = %q, want %q", result["WHERE_FILTER"], "WHERE id = $1")
+	}
+}
+
+func TestMergeClauses_UnknownClause_Panics(t *testing.T) {
+	ds := NewDataset[dsTestRow]("SELECT id, name FROM t /*WHERE_FILTER*/")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for unknown clause, got none")
+		}
+	}()
+	ds.mergeClauses(ClauseSet{"UNKNOWN_CLAUSE": "ORDER BY id"})
+}
+
+func TestClauseKey(t *testing.T) {
+	ds := NewDataset[dsTestRow]("SELECT id, name FROM t /*WHERE_FILTER*/")
+
+	key1 := ds.clauseKey(ClauseSet{"WHERE_FILTER": "WHERE id = $1"})
+	if key1 == "" {
+		t.Error("clauseKey returned empty string")
+	}
+
+	// Include DatasetTailClause so its lookup branch is exercised.
+	key2 := ds.clauseKey(ClauseSet{
+		"WHERE_FILTER":    "WHERE id = $1",
+		DatasetTailClause: "ORDER BY id",
+	})
+	if key2 == "" {
+		t.Error("clauseKey with tail clause returned empty string")
+	}
+	if key1 == key2 {
+		t.Error("clauseKey with and without tail clause should differ")
 	}
 }

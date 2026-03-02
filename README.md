@@ -3,7 +3,7 @@
 [![Build Status](https://github.com/axkit/velum/actions/workflows/go.yml/badge.svg)](https://github.com/axkit/velum/actions)
 [![Go Report Card](https://goreportcard.com/badge/github.com/axkit/velum)](https://goreportcard.com/report/github.com/axkit/velum)
 [![GoDoc](https://pkg.go.dev/badge/github.com/axkit/velum)](https://pkg.go.dev/github.com/axkit/velum)
-[![Coverage Status](https://coveralls.io/repos/github/axkit/velum/badge.svg?branch=main)](https://coveralls.io/github/axkit/velum?branch=master)
+[![Coverage Status](https://coveralls.io/repos/github/axkit/velum/badge.svg?branch=main)](https://coveralls.io/github/axkit/velum?branch=main)
 
 Velum is a lightweight, type‑safe toolkit for PostgreSQL in Go. It sits between raw `database/sql` and a full ORM: you write plain SQL when you want to, but you never write struct scanning boilerplate again.
 
@@ -50,7 +50,7 @@ tbl := velum.NewTable[Customer]("customers")
 dbw := pgxw.NewDatabaseWrapper(pool)   // pgx v5
 // dbw := sqlw.NewDatabaseWrapper(db) // database/sql
 
-// ── INSERT ────────────────────────────────────────────────────────────────────
+// --- INSERT ---
 //
 // INSERT INTO customers
 //   (id, first_name, last_name, age, ssn, row_version, created_at, updated_at, deleted_at, deleted_by)
@@ -63,7 +63,7 @@ c := Customer{FirstName: "Alice", LastName: "Smith", Age: 30}
 inserted, err := tbl.InsertReturning(ctx, dbw, &c, velum.FullScope, velum.FullScope)
 fmt.Println("new id:", inserted.ID) // filled by RETURNING
 
-// ── SELECT by PK ──────────────────────────────────────────────────────────────
+// --- SELECT by PK ---
 //
 // SELECT t.id, t.first_name, t.last_name, t.age, t.ssn,
 //        t.row_version, t.created_at, t.updated_at, t.deleted_at, t.deleted_by
@@ -71,7 +71,7 @@ fmt.Println("new id:", inserted.ID) // filled by RETURNING
 //
 found, err := tbl.GetByPK(ctx, dbw, inserted.ID)
 
-// ── UPDATE (exclude SSN, touch version + updated_at automatically) ─────────────
+// --- UPDATE (exclude SSN, touch version + updated_at automatically) ---
 //
 // UPDATE customers
 // SET first_name=$2, last_name=$3, age=$4, row_version=row_version+1, updated_at=$5
@@ -115,6 +115,28 @@ UpdatedAt *time.Time `dbw:"update"`             // system update scope
 ```
 
 > **All fields also implicitly belong to `*` (FullScope)** regardless of any custom scopes on them, so `tbl.SelectAll` and `tbl.GetByPK` always return every column.
+
+### Primary key limitation
+
+`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. Only the first matching field is used.
+
+Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) will not be available. Use the clause-based alternatives instead:
+
+```go
+// Composite PK table — no id field, no dbw:"pk" tag.
+type OrderItem struct {
+    OrderID int
+    SKU     string
+    Qty     int
+}
+tbl := velum.NewTable[OrderItem]("order_items")
+
+// Use clause-based methods instead of ByPK variants.
+item, err := tbl.Get(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+rows, err  := tbl.Select(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Update(ctx, db, &item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Delete(ctx, db, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+```
 
 ---
 
@@ -217,9 +239,6 @@ updated, err := tbl.UpdateReturningByPK(ctx, dbw, &c, "price", velum.FullScope)
 
 // Update by an arbitrary clause.
 _, err = tbl.Update(ctx, dbw, &c, "stock", "WHERE sku=$1", sku)
-
-// Increment updated_at / row_version without touching data columns.
-_, err = tbl.TouchByPK(ctx, dbw, &c)
 ```
 
 ### DELETE
@@ -344,6 +363,117 @@ Swapping drivers is just a one-line constructor change. You can also implement t
 
 ---
 
+## Query Logging
+
+The `logw` subpackage wraps any `velum.DatabaseWrapper` and emits a structured [`log/slog`](https://pkg.go.dev/log/slog) entry for every database call. It is a **drop-in replacement** — pass it wherever a `DatabaseWrapper` is expected.
+
+### Setup
+
+```go
+import "github.com/axkit/velum/logw"
+
+lw := logw.New(pgxw.NewDatabaseWrapper(pool),
+    logw.WithSlowQueryThreshold(100*time.Millisecond), // WARN when exceeded; DEBUG otherwise
+    logw.WithLogArgs(false),                           // never log arg values (default)
+    logw.WithLogRows(5),                               // sample up to 5 result rows
+)
+
+// lw satisfies velum.DatabaseWrapper — pass it to tbl / ds methods.
+inserted, err := tbl.InsertReturning(ctx, lw, &c, velum.FullScope, velum.FullScope)
+```
+
+### Log entries
+
+| Operation | Fields |
+|---|---|
+| `ExecContext` | `op=exec`, `sql`, `dur`, `rows_affected`, `args_count` |
+| `QueryRowContext` | `op=query_row`, `sql`, `query_dur`, `scan_dur`, `args_count` |
+| `QueryContext` | `op=query`, `sql`, `first_row_dur`, `scan_dur`, `rows`, `args_count` |
+| Inside a transaction | All of the above **plus** `tx_id` |
+| Transaction summary | `op=tx`, `tx_id`, `outcome` (`committed`/`rolled_back`), `total_dur`, `queries` |
+
+`QueryContext` splits duration into two parts: `first_row_dur` is the time until the first row was available; `scan_dur` is the time spent consuming the remaining rows. Both are emitted once, at `Close`.
+
+Sample output (slog text handler):
+
+```
+level=DEBUG msg=velum op=exec sql="UPDATE products SET price=$1 WHERE id=$2" dur=1.2ms rows_affected=1 args_count=2
+level=WARN  msg=velum op=query sql="SELECT * FROM events WHERE tenant_id=$1" first_row_dur=215ms scan_dur=87ms rows=4200
+level=DEBUG msg=velum op=exec sql="INSERT INTO orders ..." dur=3ms rows_affected=1 tx_id=14294967295
+level=DEBUG msg=velum op=tx tx_id=14294967295 outcome=committed total_dur=8ms queries=2
+```
+
+With `WithLogArgs(true)` and `WithLogRows(2)`, argument values and sampled rows are included:
+
+```
+level=DEBUG msg=velum op=exec sql="UPDATE products ..." dur=1.2ms rows_affected=1 args_count=2 args.$1=49.99 args.$2=7
+level=DEBUG msg=velum op=query sql="SELECT id, name FROM customers" first_row_dur=1ms scan_dur=3ms rows=120 rows_sampled=2 row1.id=1 row1.name=Alice row2.id=2 row2.name=Bob
+```
+
+`rows_sampled` only appears when the captured sample is smaller than the total row count. When all rows fit in the cap, it is omitted.
+
+### Options
+
+| Option | Default | Purpose |
+|---|---|---|
+| `WithBaseLogger(l)` | `slog.Default()` | Fallback logger when no request-scoped logger is found in the context. |
+| `WithSlowQueryThreshold(d)` | disabled | Log at `WARN` instead of `DEBUG` when total duration ≥ d. |
+| `WithLogArgs(true)` | `false` | Include query argument values under the `args` group. Disable to protect PII or passwords. |
+| `WithLogRows(n)` | `0` (off) | Capture up to n result rows and emit them as `row1.*`, `row2.*`, …. |
+| `WithLogger(ctx, l)` | — | Inject a request-scoped `*slog.Logger` into a context (call-site function, not an option). |
+| `WithLoggerFromContext(fn)` | — | Option: extract a `*slog.Logger` from the context using your own key (see below). |
+
+### Attaching a per-request logger
+
+HTTP middleware injects an enriched logger into the context once; every query executed inside that request inherits it automatically:
+
+```go
+func loggingMiddleware(lw *logw.Wrapper, next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        reqLogger := slog.Default().With(
+            "request_id", r.Header.Get("X-Request-ID"),
+            "trace_id",   r.Header.Get("X-Trace-ID"),
+        )
+        ctx := logw.WithLogger(r.Context(), reqLogger)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+Logger resolution order (first non-nil wins):
+
+1. Logger returned by `WithLoggerFromContext` function
+2. Logger stored with `logw.WithLogger(ctx, l)`
+3. Logger set with `WithBaseLogger(l)` option
+4. `slog.Default()`
+
+### Using a non-slog logger
+
+Any structured logger can be bridged via a `slog.Handler` adapter:
+
+```go
+// zap (go.uber.org/zap/exp/zapslog)
+slogLogger := slog.New(zapslog.NewHandler(zapLogger.Core()))
+
+// zerolog (github.com/samber/slog-zerolog/v2)
+slogLogger := slog.New(slogzerolog.Option{Logger: &zeroLogger}.NewZerologHandler())
+
+lw := logw.New(dw, logw.WithBaseLogger(slogLogger))
+```
+
+For per-request loggers already stored under a custom context key, use `WithLoggerFromContext` so the Wrapper knows where to find them:
+
+```go
+lw := logw.New(dw,
+    logw.WithLoggerFromContext(func(ctx context.Context) *slog.Logger {
+        l, _ := ctx.Value(myMiddlewareKey{}).(*slog.Logger)
+        return l // nil → falls back through the resolution chain
+    }),
+)
+```
+
+---
+
 ## Configuration
 
 Both `NewTable` and `NewDataset` accept functional options:
@@ -394,7 +524,11 @@ The same rule applies to `Dataset`: build your `ClauseSet` with parameterized SQ
 go test ./...
 ```
 
-The test suite spins up a PostgreSQL 13 container via [testcontainers-go](https://github.com/testcontainers/testcontainers-go) and runs full integration tests covering CRUD, scopes, soft deletes, optimistic locking, dataset joins, and memory stability.
+Tests are organised in three tiers:
+
+- **Unit tests** — pure Go, no database required. Cover SQL-building helpers, struct-tag parsing, placeholder shifting, and other stateless logic.
+- **Fake-DB tests** — use minimal in-process stubs that satisfy the `velum.DatabaseWrapper` interface. Exercise every `Table` and `Dataset` method (Insert, Select, Update, Delete, Exist, Count, …) without spinning up a real database.
+- **Integration tests** — spin up a PostgreSQL container via [testcontainers-go](https://github.com/testcontainers/testcontainers-go) and run end-to-end scenarios covering CRUD, scopes, soft deletes, optimistic locking, dataset joins, and memory stability.
 
 Benchmarks in `table_bench_test.go` compare raw pgx against Velum for primary-key lookups and updates. Velum stays within a few nanoseconds of hand-written SQL thanks to pre-built command strings and pooled scan buffers — `0.00 allocs/cycle` once the pools are warm.
 

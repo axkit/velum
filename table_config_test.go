@@ -18,13 +18,6 @@ func TestTableOptions(t *testing.T) {
 			},
 		},
 		{
-			name:   "WithName sets the name field",
-			option: WithName("test_name"),
-			expected: TableConfig{
-				name: "test_name", // Note: WithName sets the `tag` field in the current implementation
-			},
-		},
-		{
 			name: "WithArgumentNumerator sets the argNumerator function",
 			option: WithArgFormatter(func(argPos int) string {
 				return "arg_" + string(rune(argPos+'0'))

@@ -213,7 +213,7 @@ func (ds *Dataset[T]) mergeClauses(overrides ClauseSet) ClauseSet {
 
 	for k, v := range overrides {
 		if !ds.template.isValidPlaceholder(k) && k != DatasetTailClause {
-			panic(fmt.Sprintf("dataset: unknown clause %q", k))
+			panic(fmt.Sprintf("velum: unknown clause %q", k))
 		}
 		result[k] = v
 	}

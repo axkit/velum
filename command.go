@@ -8,7 +8,7 @@ import (
 var (
 	// ErrScopeMismatch is returned when the column positions required by a
 	// command do not match the struct fields available in the pool.
-	ErrScopeMismatch = errors.New("scope mismatch")
+	ErrScopeMismatch = errors.New("velum: scope mismatch")
 )
 
 // StructFieldPtrExtractor extracts a slice of pointers to the struct fields

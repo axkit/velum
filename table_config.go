@@ -4,7 +4,6 @@ package velum
 // by applying TableOption functions passed to NewTable.
 type TableConfig struct {
 	tag            string
-	name           string
 	argFormatter   ArgFormatter
 	colNameBuilder func(attr, tag string) string
 	seqNameBuilder func(string) string
@@ -22,14 +21,6 @@ type TableOption func(*TableConfig)
 func WithTag(tag string) TableOption {
 	return func(o *TableConfig) {
 		o.tag = tag
-	}
-}
-
-// WithName overrides the table name stored in TableConfig. It is reserved
-// for internal use and does not change the name passed directly to NewTable.
-func WithName(name string) TableOption {
-	return func(o *TableConfig) {
-		o.name = name
 	}
 }
 

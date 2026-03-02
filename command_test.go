@@ -1,8 +1,50 @@
 package velum
 
 import (
+	"context"
 	"testing"
 )
+
+type testCmdRow struct {
+	ID   int `dbw:"gen=serial"`
+	Name string
+}
+
+type cmdFakeRows struct{ remaining int }
+
+func (r *cmdFakeRows) Next() bool          { r.remaining--; return r.remaining >= 0 }
+func (r *cmdFakeRows) Close() error        { return nil }
+func (r *cmdFakeRows) Err() error          { return nil }
+func (r *cmdFakeRows) Scan(_ ...any) error { return nil }
+
+type cmdFakeDB struct{ rowsCount int }
+
+func (db *cmdFakeDB) QueryContext(_ context.Context, _ string, _ ...any) (Rows, error) {
+	return &cmdFakeRows{remaining: db.rowsCount}, nil
+}
+
+func TestNewCommand(t *testing.T) {
+	tbl := NewTable[testCmdRow]("t")
+	cmd := NewCommand[testCmdRow]("SELECT id, name FROM t WHERE id=$1", tbl.cc.sfpe, []int{0, 1})
+	if cmd.sql != "SELECT id, name FROM t WHERE id=$1" {
+		t.Errorf("sql = %q, want SELECT id, name FROM t WHERE id=$1", cmd.sql)
+	}
+	if len(cmd.cpos) != 2 {
+		t.Errorf("cpos len = %d, want 2", len(cmd.cpos))
+	}
+}
+
+func TestReturningCommand_Query(t *testing.T) {
+	tbl := NewTable[testCmdRow]("t")
+	cmd := tbl.cc.UpdateReturning(FullScope, FullScope, ByPK())
+	rows, err := cmd.Query(context.Background(), &cmdFakeDB{rowsCount: 2})
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows, got %d", len(rows))
+	}
+}
 
 func TestShiftParamPositions(t *testing.T) {
 	tests := []struct {
