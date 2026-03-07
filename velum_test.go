@@ -70,7 +70,7 @@ type CustomerFriendlySeq struct {
 	Customer
 }
 
-type CustomerCustomerSeq struct {
+type CustomerCustomSeq struct {
 	ID int64 `dbw:"gen=custom_seq"`
 	Customer
 }

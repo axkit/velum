@@ -10,7 +10,7 @@ const (
 	ctColsPrefixedCSV
 	// ctArgsInsert: $1, $2, $3 or nextval('seq'), $2, $3, or DEFAULT, $1, $2, etc.
 	ctArgsInsert
-	// ctColsUpdateByPK: name=$2, age=$3 (keeps $1 for PK in the 'where cause')
+	// ctColsUpdateByPK: name=$2, age=$3 (keeps $1 for PK in the 'where clause')
 	ctColsUpdateByPK
 	// ctColsUpdate: name=$1, age=$2, ssn=$3 (no PK)
 	ctColsUpdate
@@ -49,10 +49,19 @@ type clause struct {
 	typ  clauseType
 }
 
+// Tabler is implemented by Table[T] and provides the subset of Table
+// capabilities needed to build SQL clauses. It is used internally by
+// CommandContanier so that clause-building functions remain generic
+// without importing the full Table type.
 type Tabler interface {
+	// Name returns the database table name.
 	Name() string
+	// Columns returns all columns derived from the struct T.
 	Columns() []Column
+	// PK returns the primary-key column descriptor, or nil if the table has none.
 	PK() *SystemColumn
+	// FormatArg formats argument position pos (1-based) as a driver-specific
+	// placeholder (e.g. "$1" for PostgreSQL).
 	FormatArg(int) string
 }
 
@@ -119,7 +128,7 @@ func newClauseWithPK(ct clauseType, pk *SystemColumn, pkArgValue string) clause 
 		return clause{typ: ct}
 	}
 
-	panic("unknown clause type")
+	panic("velum: unknown clause type")
 }
 
 // join appends the text to the existing text.

@@ -1,3 +1,11 @@
+// Package velum is a lightweight, type-safe toolkit for PostgreSQL in Go.
+// It sits between raw database/sql and a full ORM: struct tags drive SQL
+// generation, scopes enable partial column selection and updates, and
+// pre-built command caches keep per-request overhead near zero.
+//
+// Create a Table[T] or Dataset[T] descriptor once at application startup and
+// share it safely across goroutines. Pass a DatabaseWrapper (or Transaction
+// for transactional calls) to each method at call time.
 package velum
 
 import (
@@ -8,50 +16,84 @@ import (
 	"strings"
 )
 
+// DefaultFieldTag is the struct tag key Velum reads when extracting column
+// metadata from a struct. Change it globally or per-table via WithTag.
 var DefaultFieldTag = "dbw"
 
-// DefaultColumnNameBuilder refers to the function that converts the
-// field name to the column name.
+// DefaultColumnNameBuilder is the function used to derive a database column
+// name from a struct field name and its tag value. By default it converts
+// CamelCase field names to snake_case, or reads the "name=" tag option.
 var DefaultColumnNameBuilder = ToSnakeCase
 
-// DefaultParamPlaceholderBuilder refers to the function that converts the
-// argument position to the placeholder in the SQL query.
+// DefaultParamPlaceholderBuilder is the function used to render a positional
+// SQL parameter placeholder. By default it produces PostgreSQL-style "$1", "$2", etc.
 var DefaultParamPlaceholderBuilder = ArgAsNumber
 
-// DefaultFriendlySequenceNameBuilder refers to the function that converts the
-// table name to the sequence name.
-//
-// Usually the sequence naming convention is <table_name>_seq, etc.
+// DefaultFriendlySequenceNameBuilder is the function used to derive a
+// database sequence name from a table name. By default it appends "_seq".
 var DefaultFriendlySequenceNameBuilder = TableWithSeqSuffix
 
-// Scope defines the group of the fields in the struct to be
-// used in the query operation.
+// Scope is a string expression that selects a subset of struct fields for
+// use in a SQL statement. A scope can be:
+//   - "*" (FullScope) — all fields including system columns.
+//   - A user-defined name, e.g. "profile" — only fields tagged dbw:"profile".
+//   - A comma-separated list, e.g. "price,stock" — union of named scopes.
+//   - A negated name, e.g. "!ssn" — all non-system fields except those tagged "ssn".
+//   - A system scope name: "version", "insert", "update", "delete", "system".
 type Scope string
 
 const (
+	// EmptyScope is the zero value for Scope. Its meaning depends on the method.
 	EmptyScope Scope = ""
 
-	// FullScope is the scope that includes all fields, including system fields.
+	// FullScope selects every field in the struct, including all system columns.
 	FullScope Scope = "*"
 
 	scopeTagKey string = "scope"
 )
 
 var (
-	TagKey                      = "dbw"
-	VersionField          Scope = "version"
-	InsertScope           Scope = "insert"
-	UpdateScope           Scope = "update"
-	DeleteScope           Scope = "delete"
-	PrimaryKeyTagOption         = "pk"
-	StandardPrimaryKeyCol       = "id"
-	SystemScope           Scope = "system"
+	// TagKey is the default struct tag key, equal to DefaultFieldTag.
+	TagKey = "dbw"
+
+	// VersionField is the system scope tag value for optimistic-locking columns.
+	// Columns tagged dbw:"version" are auto-incremented (col=col+1) on every UPDATE.
+	VersionField Scope = "version"
+
+	// InsertScope is the system scope tag value for columns populated on INSERT
+	// (e.g. created_at). These columns are excluded from UPDATE statements.
+	InsertScope Scope = "insert"
+
+	// UpdateScope is the system scope tag value for columns populated on UPDATE
+	// (e.g. updated_at). These columns are excluded from INSERT statements.
+	UpdateScope Scope = "update"
+
+	// DeleteScope is the system scope tag value for columns populated during a
+	// soft delete (e.g. deleted_at, deleted_by). These columns are excluded from
+	// regular INSERT and UPDATE statements.
+	DeleteScope Scope = "delete"
+
+	// PrimaryKeyTagOption is the tag option value that explicitly marks a field
+	// as the primary key (e.g. dbw:"pk,gen=no"). A field named "id" is treated
+	// as the primary key automatically without this option.
+	PrimaryKeyTagOption = "pk"
+
+	// StandardPrimaryKeyCol is the column name used to auto-detect the primary
+	// key when no explicit dbw:"pk" tag is present.
+	StandardPrimaryKeyCol = "id"
+
+	// SystemScope is a convenience scope that expands to all system scopes
+	// (version, insert, update, delete) at once.
+	SystemScope Scope = "system"
 )
 
-// SystemScopes holds the system scopes.
+// SystemScopes is the ordered list of pointers to every built-in system scope
+// variable. It is used internally to enumerate system scopes and can be read
+// by callers that need to introspect which scopes are reserved.
 var SystemScopes = []*Scope{&VersionField, &InsertScope, &UpdateScope, &DeleteScope}
 
-// IsSystemScope returns true if the scope is a system scope.
+// IsSystemScope reports whether s is one of the built-in system scopes
+// (version, insert, update, delete).
 func IsSystemScope(s Scope) bool {
 	for _, sys := range SystemScopes {
 		if *sys == s {
@@ -61,106 +103,93 @@ func IsSystemScope(s Scope) bool {
 	return false
 }
 
-// ColumnValueGenMethod defines the method to generate the value of a field.
-type ColumnValueGenMethod string
+// PkColumnValueGenMethod describes how the value of a primary key column is
+// produced when a new row is inserted.
+type PkColumnValueGenMethod string
 
 const (
-	// Default sequence generation method. It is used when no sequence generation method is defined.
-	// The function SequenceNameBuilder is used to generate sequence name by table name.
-	FriendlySequence ColumnValueGenMethod = ""
+	// FriendlySequence means the PK value is generated by a database sequence
+	// whose name is derived from the table name by DefaultFriendlySequenceNameBuilder
+	// (e.g. "customers_seq"). This is the default when no gen= tag is provided.
+	FriendlySequence PkColumnValueGenMethod = ""
 
-	// SerialFieleType says the field is serial and it is generated by database.
-	SerialFieleType ColumnValueGenMethod = "serial"
+	// SerialFieldType means the PK is a SERIAL / BIGSERIAL column; the insert
+	// statement uses DEFAULT and lets the database assign the value.
+	SerialFieldType PkColumnValueGenMethod = "serial"
 
-	// UuidFileType says the field is uuid and it is generated by database.
-	UuidFileType ColumnValueGenMethod = "uuid"
+	// UuidFieldType means the PK is a UUID column; the insert statement calls
+	// gen_random_uuid() to generate the value.
+	UuidFieldType PkColumnValueGenMethod = "uuid"
 
-	// NoSequence says the field value is generated and assigned by application.
-	NoSequence ColumnValueGenMethod = "no"
+	// NoSequence means the application provides the PK value explicitly; no
+	// database-side generation is used.
+	NoSequence PkColumnValueGenMethod = "no"
 
-	// CustomSequece holds the sequence name to be used for the field in insert operation.
-	CustomSequece ColumnValueGenMethod = "customseq"
+	// CustomSequence means the PK value is generated by a named sequence whose
+	// name is stored in Column.ValueGenerator (e.g. nextval('my_seq')).
+	CustomSequence PkColumnValueGenMethod = "customseq"
 )
 
+// Rows is the interface for iterating over a result set. It is satisfied by
+// *sql.Rows, pgx.Rows, and any compatible implementation.
 type Rows interface {
-	// Close closes the rows, making the connection ready for use again. It is safe
-	// to call Close after rows is already closed.
+	// Close closes the result set, releasing the underlying database connection.
+	// It is safe to call Close more than once.
 	Close() error
 
-	// Err returns any error that occurred while reading. Err must only be called after the Rows is closed (either by
-	// calling Close or by Next returning false). If it is called early it may return nil even if there was an error
-	// executing the query.
+	// Err returns the first error encountered during iteration. Call Err after
+	// Next returns false to distinguish end-of-results from a network or query error.
 	Err() error
 
-	// Next prepares the next row for reading. It returns true if there is another
-	// row and false if no more rows are available or a fatal error has occurred.
-	// It automatically closes rows when all rows are read.
-	//
-	// Callers should check rows.Err() after rows.Next() returns false to detect
-	// whether result-set reading ended prematurely due to an error. See
-	// Conn.Query for details.
-	//
-	// For simpler error handling, consider using the higher-level pgx v5
-	// CollectRows() and ForEachRow() helpers instead.
+	// Next advances the cursor to the next row. Returns false when there are no
+	// more rows or when a fatal error has occurred.
 	Next() bool
 
-	// Scan reads the values from the current row into dest values positionally.
-	// dest can include pointers to core types, values implementing the Scanner
-	// interface, and nil. nil will skip the value entirely. It is an error to
-	// call Scan without first calling Next() and checking that it returned true.
+	// Scan reads the current row's columns into dest in positional order.
+	// dest elements may be pointers to concrete types or values implementing
+	// sql.Scanner.
 	Scan(dest ...any) error
 }
 
+// Row is the interface for a single-row query result. It is satisfied by
+// *sql.Row, pgx.Row, and any compatible implementation.
 type Row interface {
+	// Scan reads the row's columns into dest in positional order.
 	Scan(args ...any) error
+	// Err returns any error that occurred before Scan was called.
 	Err() error
 }
 
+// Result is the interface returned by exec-style statements. It is satisfied
+// by sql.Result, pgconn.CommandTag (via a wrapper), and any compatible type.
 type Result interface {
-	// LastInsertId returns the integer generated by the database
-	// in response to a command. Typically this will be from an
-	// "auto increment" column when inserting a new row. Not all
-	// databases support this feature, and the syntax of such
-	// statements varies.
-	//LastInsertId() (int64, error)
-
-	// RowsAffected returns the number of rows affected by an
-	// update, insert, or delete. Not every database or database
-	// driver may support this.
+	// RowsAffected returns the number of rows changed by the statement.
 	RowsAffected() (int64, error)
 }
 
+// QueryExecuter can execute a query that returns multiple rows.
 type QueryExecuter interface {
 	QueryContext(ctx context.Context, sql string, args ...any) (Rows, error)
 }
 
+// QueryRowExecuter can execute a query that returns at most one row.
 type QueryRowExecuter interface {
 	QueryRowContext(ctx context.Context, sql string, args ...any) Row
 }
 
+// Executer can execute a statement that does not return rows.
 type Executer interface {
 	ExecContext(ctx context.Context, sql string, args ...any) (Result, error)
 }
 
-// IsolationLevel is the transaction isolation level used in TxOptions.
-type IsolationLevel int
-
-const (
-	LevelDefault IsolationLevel = iota
-	LevelReadUncommitted
-	LevelReadCommitted
-	LevelWriteCommitted
-	LevelRepeatableRead
-	LevelSnapshot
-	LevelSerializable
-	LevelLinearizable
-)
-
 var matchFirstCap = regexp.MustCompile("(.)([A-Z][a-z]+)")
 var matchAllCap = regexp.MustCompile("([a-z0-9])([A-Z])")
 
-// ToSnakeCase takes 'customer_id' if attribute tag is `dbw:"name=customer_id"`, otherwise
-// it converts the attribute name to snake case: CustomerID int -> customer_id.
+// ToSnakeCase converts a struct field name to a database column name.
+// If the tag contains a "name=col_name" option, that value is used directly.
+// Otherwise the field name is converted from CamelCase to snake_case.
+//
+// Example: "FirstName" → "first_name", tag "name=first_name" → "first_name".
 func ToSnakeCase(attr, tag string) string {
 	if tag != "" {
 		from := strings.Index(tag, "name=")
@@ -178,40 +207,48 @@ func ToSnakeCase(attr, tag string) string {
 	return strings.ToLower(snake)
 }
 
+// ArgFormatter is a function that renders a positional SQL parameter placeholder
+// for argument position i (1-based). The default implementation, ArgAsNumber,
+// produces "$1", "$2", etc. for PostgreSQL.
 type ArgFormatter func(i int) string
 
+// ArgAsNumber returns the PostgreSQL-style positional placeholder "$i".
 func ArgAsNumber(i int) string {
 	return "$" + strconv.Itoa(i)
 }
 
+// ArgAsQuestionMark always returns "?", suitable for drivers that use
+// positional question-mark placeholders (e.g. MySQL via database/sql).
 func ArgAsQuestionMark(i int) string {
 	return "?"
 }
 
+// TableWithSeqSuffix derives a sequence name by appending "_seq" to the
+// table name. This is the default DefaultFriendlySequenceNameBuilder.
 func TableWithSeqSuffix(tablename string) string {
 	return tablename + "_seq"
 }
 
-// ShiftParamPositions replaces "id = $1 OR id > $1 AND name < $2"
-// with "id = $10 OR id > $10 AND name < $11" if fromIndex is 10.
+// ShiftParamPositions renumbers every "$N" placeholder in sqlWhere by adding
+// (fromIndex - 1) to N. This is used internally when combining a clause that
+// uses its own $1-based numbering with a base query that already occupies
+// some argument positions.
+//
+// Example: ShiftParamPositions("id = $1 AND age > $2", 3) → "id = $3 AND age > $4".
 func ShiftParamPositions(sqlWhere string, fromIndex int) string {
-	// Regular expression to match placeholders like $1, $2, etc.
 	re := regexp.MustCompile(`\$(\d+)`)
-
-	// Replace each placeholder with the incremented index
 	result := re.ReplaceAllStringFunc(sqlWhere, func(match string) string {
-		// Extract the number from the placeholder
 		num, _ := strconv.Atoi(strings.TrimPrefix(match, "$"))
-		// Increment the number by the fromIndex
 		return "$" + strconv.Itoa(num+fromIndex-1)
 	})
-
 	return result
 }
 
-// StructPluralName converts the struct name to the table name.
-// By default, it converts the struct name to snake case and
-// pluralizes it.
+// StructPluralName derives a table name from a struct value by converting the
+// type name to snake_case and pluralising it. It is a convenience helper for
+// cases where the table name follows the default convention.
+//
+// Example: Customer{} → "customers", OrderItem{} → "order_items".
 func StructPluralName(v any) string {
 	name := reflect.TypeOf(v).Name()
 	snake := matchFirstCap.ReplaceAllString(name, "${1}_${2}")
@@ -219,23 +256,26 @@ func StructPluralName(v any) string {
 	return strings.ToLower(ToPluralName(snake))
 }
 
+// ToPluralName applies simple English pluralisation rules to s:
+// words ending in s/x/ch/sh/z receive "es" or "zes"; all others receive "s".
 func ToPluralName(s string) string {
 	if strings.HasSuffix(s, "z") {
-		return s + "zes" // Add 'zes' for these suffixes
+		return s + "zes"
 	}
 	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "x") ||
 		strings.HasSuffix(s, "ch") ||
 		strings.HasSuffix(s, "sh") {
-		return s + "es" // Add 'es' for these suffixes
+		return s + "es"
 	}
-	return s + "s" // Default pluralization by adding 's'
+	return s + "s"
 }
 
-// IsTagOptionExists checks if the tag contains the tagOption.
-// dbw:"name=customer_id,pk" -> IsTagOptionExists("name=customer_id,pk", "pk") returns true.
-// dbw:"name=customer_id,pk" -> IsTagOptionExists("name=customer_id,pk", "name") returns true.
+// IsTagOptionExist reports whether tagOption appears as a standalone token
+// inside a comma-separated tag string. It handles leading, trailing, and
+// middle positions correctly.
+//
+// Example: IsTagOptionExist("name=customer_id,pk", "pk") → true.
 func IsTagOptionExist(tag string, tagOption string) bool {
-
 	hp := tagOption + ","
 	hs := "," + tagOption
 	co := "," + tagOption + ","
@@ -246,6 +286,9 @@ func IsTagOptionExist(tag string, tagOption string) bool {
 		strings.Contains(tag, co)
 }
 
+// Transaction extends the three query interfaces with explicit commit and
+// rollback methods. It is used by DatabaseWrapper.InTx and must be satisfied
+// by any adapter that supports transactions.
 type Transaction interface {
 	Executer
 	QueryRowExecuter
@@ -254,11 +297,19 @@ type Transaction interface {
 	Rollback(context.Context) error
 }
 
+// DatabaseWrapper is the full adapter interface that a driver wrapper must
+// implement to be usable with Velum. The sqlw and pgxw packages provide
+// reference implementations for database/sql and pgx v5 respectively.
 type DatabaseWrapper interface {
 	Executer
 	QueryRowExecuter
 	QueryExecuter
+	// IsNotFound returns true when err represents a "no rows" condition,
+	// allowing callers to distinguish "not found" from other errors.
 	IsNotFound(err error) bool
+	// Begin starts a new transaction and returns it as a Transaction.
 	Begin(context.Context) (Transaction, error)
+	// InTx executes fn inside a transaction, committing on success and
+	// rolling back on any non-nil error returned by fn.
 	InTx(context.Context, func(Transaction) error) error
 }

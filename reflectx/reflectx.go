@@ -1,3 +1,7 @@
+// Package reflectx provides struct field extraction and related utilities
+// used internally by velum. It extracts field metadata (name, path, tag)
+// from arbitrary structs once at startup and exposes pooled scan-buffer
+// helpers that eliminate per-request heap allocations.
 package reflectx
 
 import (

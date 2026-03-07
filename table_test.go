@@ -186,6 +186,7 @@ func TestTable_BasicDML(t *testing.T) {
 			uc.DeletedAt = now()
 			uc.DeletedBy = new(int)
 			*uc.DeletedBy = 101
+			uc.RowVersion++
 
 			err = dbwPgx.InTx(ctx, func(tx velum.Transaction) error {
 				_, err := tbl.SoftDeleteByPK(ctx, tx, uc)

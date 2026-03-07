@@ -50,7 +50,7 @@ func Benchmark_Select1_Pgx_Tbl_GetByPK(b *testing.B) {
 	}
 }
 
-func Benchmark_Select1_Pgx_Tbl_GetTo(b *testing.B) {
+func Benchmark_Select1_Pgx_Tbl_GetByPKTo(b *testing.B) {
 	ctx := context.Background()
 
 	initConnections(b)
@@ -60,7 +60,7 @@ func Benchmark_Select1_Pgx_Tbl_GetTo(b *testing.B) {
 	b.ResetTimer()
 	c, ptrs := tbl.Object(velum.FullScope)
 	for b.Loop() {
-		err := tbl.GetTo(ctx, dbwPgx, *ptrs, 1)
+		err := tbl.GetByPKTo(ctx, dbwPgx, *ptrs, 1)
 		if err != nil {
 			b.Fatalf("failed to select customer: %v", err)
 		}

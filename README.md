@@ -1,44 +1,539 @@
 # velum
+
 [![Build Status](https://github.com/axkit/velum/actions/workflows/go.yml/badge.svg)](https://github.com/axkit/velum/actions)
 [![Go Report Card](https://goreportcard.com/badge/github.com/axkit/velum)](https://goreportcard.com/report/github.com/axkit/velum)
 [![GoDoc](https://pkg.go.dev/badge/github.com/axkit/velum)](https://pkg.go.dev/github.com/axkit/velum)
-[![Coverage Status](https://coveralls.io/repos/github/axkit/velum/badge.svg?branch=main)](https://coveralls.io/github/axkit/velum?branch=master)
+[![Coverage Status](https://coveralls.io/repos/github/axkit/velum/badge.svg?branch=main)](https://coveralls.io/github/axkit/velum?branch=main)
 
- 
+Velum is a lightweight, type‑safe toolkit for PostgreSQL in Go. It sits between raw `database/sql` and a full ORM: you write plain SQL when you want to, but you never write struct scanning boilerplate again.
 
+## Why Velum?
 
+Writing `rows.Scan(&c.ID, &c.FirstName, &c.LastName, ...)` by hand is error-prone and tedious.
+Full ORMs solve that, but they hide the SQL, make partial updates painful, and often surprise you with N+1 queries or magical transactions.
 
+Velum takes a different angle:
+
+- **Struct tags drive everything.** Annotate your fields once with `dbw` tags. Velum builds the correct `SELECT`, `INSERT`, `UPDATE`, and `DELETE` SQL from them — including partial updates and soft deletes.
+- **Scopes make partial updates trivial.** Tag a field `dbw:"profile"` and pass `"profile"` as the scope. Velum selects exactly those columns. Use `"!ssn"` to exclude a scope. Mix and match freely.
+- **Zero runtime reflection per request.** Struct metadata is extracted once when `NewTable` is called. From then on it's pointer arithmetic and a pre-built SQL cache.
+- **The SQL is always visible.** No magic. Every method documents what it sends to the database, and you can always drop down to raw SQL for anything complex.
+- **Dataset templates for joins and CTEs.** Wrap an arbitrary `SELECT` in a `Dataset[T]`. Inject or omit `WHERE` / `ORDER BY` / `LIMIT` clauses at call time using named placeholders.
+
+---
+
+## Quick Start
 
 ```go
-type Customer struct {
-	ID 			int  		`dbw:"pk,gen=serial"` 
-	FirstName 	string 
-	LastName 	string 
-	BirthDate   date.Date   `dbw:"bd"`     
-	SSN         string 		`dbw:"ssn"`
-	Address 	struct {
-		Line1 	string 
-		Line2 	*string
-		CityID 	int 
-		Country int 
-		Zip 	string 
-	} 
-	Origin string  		 	`dbw:"-"`
-	RowVersion 	int64		`dbw:"version"`
-	CreatedAt 	time.Time  	`dbw:"insert"`
-	UpdatedAt 	*time.Time 	`dbw:"update"`
-	DeletedAt 	*time.Time 	`dbw:"delete"`
-	DeletedBy 	*int       	`dbw:"delete"`
+// Embed system columns to keep your domain type clean.
+type SystemColumns struct {
+    RowVersion int64      `dbw:"version"`
+    CreatedAt  time.Time  `dbw:"insert"`
+    UpdatedAt  *time.Time `dbw:"update"`
+    DeletedAt  *time.Time `dbw:"delete"`
+    DeletedBy  *int       `dbw:"delete"`
 }
 
-	// once
-	dbSql, err = sql.Open("postgres", connectionString)
-	dbwSql = sqlw.NewDatabaseWrapper(dbSql) // database sql wrapper here, pgx supported too
-	tbl := velum.NewTable[Customer]()
+type Customer struct {
+    ID        int     `dbw:"gen=serial"` // "id" column → auto-detected as PK
+    FirstName string
+    LastName  string
+    Age       int     `dbw:"age"`
+    SSN       *string `dbw:"ssn"`
+    SystemColumns
+}
 
-	// get table row by primary key value
-	c, err := tbl.GetByPK(ctx, dbwSql, 42)
-	
-	nc := Customer{FirstName: "Robert", LastName : "Egorov"}
-	err := tbl.Insert(ctx, dbSql, &nc)
-	fmt.Println("new customer id: ", nc.ID)
+// Create the table descriptor once at startup — it is safe for concurrent use.
+tbl := velum.NewTable[Customer]("customers")
+
+// Choose your database driver. Both implement the same small interfaces.
+dbw := pgxw.NewDatabaseWrapper(pool)   // pgx v5
+// dbw := sqlw.NewDatabaseWrapper(db) // database/sql
+
+// --- INSERT ---
+//
+// INSERT INTO customers
+//   (id, first_name, last_name, age, ssn, row_version, created_at, updated_at, deleted_at, deleted_by)
+// VALUES
+//   (DEFAULT, $1, $2, $3, $4, $5, $6, $7, $8, $9)
+// RETURNING
+//   id, first_name, last_name, age, ssn, row_version, created_at, updated_at, deleted_at, deleted_by
+//
+c := Customer{FirstName: "Alice", LastName: "Smith", Age: 30}
+inserted, err := tbl.InsertReturning(ctx, dbw, &c, velum.FullScope, velum.FullScope)
+fmt.Println("new id:", inserted.ID) // filled by RETURNING
+
+// --- SELECT by PK ---
+//
+// SELECT t.id, t.first_name, t.last_name, t.age, t.ssn,
+//        t.row_version, t.created_at, t.updated_at, t.deleted_at, t.deleted_by
+// FROM customers t WHERE id=$1
+//
+found, err := tbl.GetByPK(ctx, dbw, inserted.ID)
+
+// --- UPDATE (exclude SSN, touch version + updated_at automatically) ---
+//
+// UPDATE customers
+// SET first_name=$2, last_name=$3, age=$4, row_version=row_version+1, updated_at=$5
+// WHERE id=$1
+//
+found.Age = 31
+now := time.Now()
+found.UpdatedAt = &now
+_, err = tbl.UpdateByPK(ctx, dbw, found, velum.Scope("!ssn"))
+```
+
+---
+
+## Struct Tags
+
+Velum reads the `dbw` struct tag. Fields with no `dbw` tag (or with `-`) are treated according to these defaults:
+
+| Tag | Meaning |
+|---|---|
+| *(no tag)* | Column is in the full scope (`*`). Name is snake_cased from the field name. |
+| `name=col_name` | Override the column name. |
+| `gen=serial` | PK generated by `SERIAL` / `DEFAULT`. Excluded from INSERT args. |
+| `gen=uuid` | PK generated by `gen_random_uuid()`. |
+| `gen=no` | PK value provided by the application. |
+| `gen=my_seq` | PK generated by `nextval('my_seq')`. |
+| `scope_name` | Include the field in the named scope. |
+| `scope_a,scope_b` | Include the field in multiple scopes. |
+| `version` | System scope. `UPDATE` auto-increments this column (`col=col+1`). |
+| `insert` | System scope. Included automatically in `INSERT`. |
+| `update` | System scope. Included automatically in `UPDATE`. |
+| `delete` | System scope. Included automatically in soft-delete operations. |
+| `pk` | Explicitly marks the field as primary key. Redundant for a field named `id`. |
+| `-` | Skip this field entirely. |
+
+Tag values are comma-separated, `name=` must come first if used:
+
+```go
+SSN       *string   `dbw:"ssn"`               // custom scope "ssn"
+BirthDate time.Time `dbw:"name=dob,profile"`   // column "dob", scope "profile"
+UpdatedAt *time.Time `dbw:"update"`             // system update scope
+```
+
+> **All fields also implicitly belong to `*` (FullScope)** regardless of any custom scopes on them, so `tbl.SelectAll` and `tbl.GetByPK` always return every column.
+
+### Primary key limitation
+
+`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. Only the first matching field is used.
+
+Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) will not be available. Use the clause-based alternatives instead:
+
+```go
+// Composite PK table — no id field, no dbw:"pk" tag.
+type OrderItem struct {
+    OrderID int
+    SKU     string
+    Qty     int
+}
+tbl := velum.NewTable[OrderItem]("order_items")
+
+// Use clause-based methods instead of ByPK variants.
+item, err := tbl.Get(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+rows, err  := tbl.Select(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Update(ctx, db, &item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Delete(ctx, db, "WHERE order_id=$1 AND sku=$2", orderID, sku)
+```
+
+---
+
+## Scopes
+
+Scopes are the core concept that makes Velum worth using.
+
+A scope is a named group of fields. Most CRUD methods accept a `Scope` argument that tells Velum which fields to include. This lets you write one struct and cover every access pattern without reflection tricks or hand-rolled SQL.
+
+```go
+type Product struct {
+    ID          int     `dbw:"gen=serial"`
+    Name        string
+    Description string  `dbw:"description"`
+    Price       float64 `dbw:"price"`
+    Stock       int     `dbw:"stock"`
+    RowVersion  int64   `dbw:"version"`
+    UpdatedAt   *time.Time `dbw:"update"`
+}
+tbl := velum.NewTable[Product]("products")
+```
+
+### Scope expressions
+
+| Expression | Meaning |
+|---|---|
+| `"*"` (`velum.FullScope`) | All columns, including system columns. |
+| `"price"` | Only fields tagged `dbw:"price"`. Plus PK when needed. |
+| `"price,stock"` | Fields tagged `price` **or** `stock`. |
+| `"!description"` | All non-system columns **except** those tagged `description`. |
+| `"system"` (`velum.SystemScope`) | All system columns (`version`, `insert`, `update`, `delete`). |
+
+```go
+// Bump the price only.
+// UPDATE products SET price=$2, row_version=row_version+1, updated_at=$3 WHERE id=$1
+tbl.UpdateByPK(ctx, dbw, &p, "price")
+
+// Bump price and stock together.
+// UPDATE products SET price=$2, stock=$3, row_version=row_version+1, updated_at=$4 WHERE id=$1
+tbl.UpdateByPK(ctx, dbw, &p, "price,stock")
+
+// Update everything except the description (useful for bulk edits).
+// UPDATE products SET name=$2, price=$3, stock=$4, row_version=row_version+1, updated_at=$5 WHERE id=$1
+tbl.UpdateByPK(ctx, dbw, &p, "!description")
+
+// Select only price and stock (plus PK) for a lightweight list endpoint.
+// SELECT t.id, t.price, t.stock FROM products t WHERE category=$1 ORDER BY name
+rows, err := tbl.Select(ctx, dbw, "price,stock", "WHERE category=$1 ORDER BY name", catID)
+```
+
+---
+
+## Table Methods
+
+`Table[T]` is created once at startup and is safe for concurrent use.
+
+### SELECT
+
+```go
+// Single row by PK.
+c, err := tbl.GetByPK(ctx, dbw, 42)
+
+// Single row by any clause. Use parameterized args — never inline values.
+c, err := tbl.Get(ctx, dbw, velum.FullScope, "WHERE email=$1", email)
+
+// Multiple rows.
+list, err := tbl.SelectAll(ctx, dbw)
+list, err := tbl.Select(ctx, dbw, "price,stock", "WHERE active=$1 ORDER BY name", true)
+
+// Check existence.
+ok, err  := tbl.ExistByPK(ctx, dbw, id)
+ok, err  = tbl.Exist(ctx, dbw, "WHERE email=$1", email)
+n, err  := tbl.Count(ctx, dbw, "WHERE active=$1", true)
+```
+
+### INSERT
+
+```go
+// Insert and read back only system columns (avoids a second round-trip for large structs).
+err := tbl.Insert(ctx, dbw, &c)
+
+// Insert and return the requested scopes.
+inserted, err := tbl.InsertReturning(ctx, dbw, &c, velum.FullScope, velum.FullScope)
+
+// Insert only certain columns (e.g., skip fields that have DB defaults).
+result, err := tbl.InsertScope(ctx, dbw, &c, "profile")
+```
+
+### UPDATE
+
+```go
+// Update all non-system columns by PK.
+_, err := tbl.UpdateByPK(ctx, dbw, &c, velum.FullScope)
+
+// Update only specific fields by PK.
+_, err = tbl.UpdateByPK(ctx, dbw, &c, "price,stock")
+
+// Update by PK and return the updated row.
+updated, err := tbl.UpdateReturningByPK(ctx, dbw, &c, "price", velum.FullScope)
+
+// Update by an arbitrary clause.
+_, err = tbl.Update(ctx, dbw, &c, "stock", "WHERE sku=$1", sku)
+```
+
+### DELETE
+
+```go
+// Hard delete by PK.
+_, err := tbl.DeleteByPK(ctx, dbw, id)
+
+// Hard delete by clause with args.
+_, err = tbl.Delete(ctx, dbw, "WHERE expired_at < $1", time.Now())
+
+// Soft delete — sets columns in the "delete" scope (deleted_at, deleted_by, etc.).
+_, err = tbl.SoftDeleteByPK(ctx, dbw, &c)
+
+// Soft delete and return the final row state.
+deleted, err := tbl.SoftDeleteReturningByPK(ctx, dbw, &c)
+```
+
+---
+
+## System Columns and Automatic Behaviors
+
+Fields tagged with system scopes get special treatment:
+
+| System scope | Behavior on INSERT | Behavior on UPDATE | Behavior on soft delete |
+|---|---|---|---|
+| `insert` | Included in every INSERT. | Excluded. | Excluded. |
+| `update` | Excluded. | Always included. | Always included. |
+| `delete` | Excluded. | Excluded. | Always included. |
+| `version` | Included. | Auto-incremented (`col=col+1`). | Auto-incremented. |
+
+This means `row_version=row_version+1` is added automatically to every `UPDATE` — you get optimistic locking with no extra code.
+
+---
+
+## Dataset Templates
+
+When you need arbitrary `SELECT` statements — multi-table joins, window functions, CTEs — use `Dataset[T]`. Define the query once with named placeholders, then inject SQL clauses at call time.
+
+### Defining a Dataset
+
+```go
+type OrderSummary struct {
+    OrderID      int       `dbw:"name=order_id"`
+    CustomerName string    `dbw:"name=customer_name"`
+    Total        float64   `dbw:"name=total"`
+    PaidAt       time.Time `dbw:"name=paid_at"`
+}
+
+ds := velum.NewDataset[OrderSummary](`
+    SELECT
+        o.id          AS order_id,
+        c.name        AS customer_name,
+        o.total       AS total,
+        o.paid_at     AS paid_at
+    FROM orders o
+    JOIN customers c ON c.id = o.customer_id
+    /*WHERE_FILTER*/
+    /*ORDER_BY*/
+`)
+```
+
+Placeholders are SQL block comments of the form `/*IDENTIFIER*/`. Any identifier that is a valid Go-style token (letters, digits, underscores) is treated as a placeholder. All other block comments are left untouched.
+
+### Executing with clauses
+
+```go
+// Build a reusable query — do this once, call many times.
+recent := ds.WithClauses(velum.ClauseSet{
+    "WHERE_FILTER": "WHERE o.paid_at > $1",
+    "ORDER_BY":     "ORDER BY o.paid_at DESC",
+})
+
+// Pass query arguments when executing.
+rows, err := recent.Select(ctx, dbw, time.Now().Add(-24*time.Hour))
+
+// Reuse the same compiled query with different arguments.
+rows, err = recent.Select(ctx, dbw, time.Now().Add(-7*24*time.Hour))
+
+// Convenience helpers for single-placeholder calls.
+row, err := ds.WithNamedClause("WHERE_FILTER", "WHERE o.id = $1").Get(ctx, dbw, orderID)
+
+// Append a clause after the template (backwards-compatible shorthand).
+rows, err = ds.WithTailClause("ORDER BY paid_at DESC LIMIT 10").Select(ctx, dbw)
+```
+
+### How placeholders work
+
+- Each placeholder is **replaced by the clause string** you provide, or by an empty string if you omit it.
+- Velum **automatically renumbers `$N` parameters** so you can start every clause at `$1` — the engine shifts them based on how many parameters already appear in the template.
+- Placeholders that appear inside regular SQL identifiers, strings, or multi-word block comments are ignored.
+
+```go
+// Template with $1..$2 in the base query:
+ds := velum.NewDataset[Result](`
+    SELECT * FROM orders WHERE tenant_id = $1 /*EXTRA_FILTER*/
+`)
+
+// Your clause starts at $1 — Velum shifts it to $2 automatically.
+ds.WithNamedClause("EXTRA_FILTER", "AND amount > $1").Select(ctx, dbw, tenantID, minAmount)
+//                                                                        ^$1         ^$2 (shifted)
+```
+
+---
+
+## Adapters
+
+Velum defines three small interfaces for database access:
+
+```go
+type Executer         interface { ExecContext(...)      }
+type QueryRowExecuter interface { QueryRowContext(...)   }
+type QueryExecuter    interface { QueryContext(...)      }
+```
+
+Two reference wrappers are included:
+
+- **[`sqlw`](./sqlw/sqlw.go)** — wraps `*sql.DB` and `*sql.Tx`.
+- **[`pgxw`](./pgxw/pgxw.go)** — wraps `*pgxpool.Pool` and `pgx.Tx`.
+
+Swapping drivers is just a one-line constructor change. You can also implement the interfaces yourself if you need custom middleware, tracing, or a different driver.
+
+---
+
+## Query Logging
+
+The `logw` subpackage wraps any `velum.DatabaseWrapper` and emits a structured [`log/slog`](https://pkg.go.dev/log/slog) entry for every database call. It is a **drop-in replacement** — pass it wherever a `DatabaseWrapper` is expected.
+
+### Setup
+
+```go
+import "github.com/axkit/velum/logw"
+
+lw := logw.New(pgxw.NewDatabaseWrapper(pool),
+    logw.WithSlowQueryThreshold(100*time.Millisecond), // WARN when exceeded; DEBUG otherwise
+    logw.WithLogArgs(false),                           // never log arg values (default)
+    logw.WithLogRows(5),                               // sample up to 5 result rows
+)
+
+// lw satisfies velum.DatabaseWrapper — pass it to tbl / ds methods.
+inserted, err := tbl.InsertReturning(ctx, lw, &c, velum.FullScope, velum.FullScope)
+```
+
+### Log entries
+
+| Operation | Fields |
+|---|---|
+| `ExecContext` | `op=exec`, `sql`, `dur`, `rows_affected`, `args_count` |
+| `QueryRowContext` | `op=query_row`, `sql`, `query_dur`, `scan_dur`, `args_count` |
+| `QueryContext` | `op=query`, `sql`, `first_row_dur`, `scan_dur`, `rows`, `args_count` |
+| Inside a transaction | All of the above **plus** `tx_id` |
+| Transaction summary | `op=tx`, `tx_id`, `outcome` (`committed`/`rolled_back`), `total_dur`, `queries` |
+
+`QueryContext` splits duration into two parts: `first_row_dur` is the time until the first row was available; `scan_dur` is the time spent consuming the remaining rows. Both are emitted once, at `Close`.
+
+Sample output (slog text handler):
+
+```
+level=DEBUG msg=velum op=exec sql="UPDATE products SET price=$1 WHERE id=$2" dur=1.2ms rows_affected=1 args_count=2
+level=WARN  msg=velum op=query sql="SELECT * FROM events WHERE tenant_id=$1" first_row_dur=215ms scan_dur=87ms rows=4200
+level=DEBUG msg=velum op=exec sql="INSERT INTO orders ..." dur=3ms rows_affected=1 tx_id=14294967295
+level=DEBUG msg=velum op=tx tx_id=14294967295 outcome=committed total_dur=8ms queries=2
+```
+
+With `WithLogArgs(true)` and `WithLogRows(2)`, argument values and sampled rows are included:
+
+```
+level=DEBUG msg=velum op=exec sql="UPDATE products ..." dur=1.2ms rows_affected=1 args_count=2 args.$1=49.99 args.$2=7
+level=DEBUG msg=velum op=query sql="SELECT id, name FROM customers" first_row_dur=1ms scan_dur=3ms rows=120 rows_sampled=2 row1.id=1 row1.name=Alice row2.id=2 row2.name=Bob
+```
+
+`rows_sampled` only appears when the captured sample is smaller than the total row count. When all rows fit in the cap, it is omitted.
+
+### Options
+
+| Option | Default | Purpose |
+|---|---|---|
+| `WithBaseLogger(l)` | `slog.Default()` | Fallback logger when no request-scoped logger is found in the context. |
+| `WithSlowQueryThreshold(d)` | disabled | Log at `WARN` instead of `DEBUG` when total duration ≥ d. |
+| `WithLogArgs(true)` | `false` | Include query argument values under the `args` group. Disable to protect PII or passwords. |
+| `WithLogRows(n)` | `0` (off) | Capture up to n result rows and emit them as `row1.*`, `row2.*`, …. |
+| `WithLogger(ctx, l)` | — | Inject a request-scoped `*slog.Logger` into a context (call-site function, not an option). |
+| `WithLoggerFromContext(fn)` | — | Option: extract a `*slog.Logger` from the context using your own key (see below). |
+
+### Attaching a per-request logger
+
+HTTP middleware injects an enriched logger into the context once; every query executed inside that request inherits it automatically:
+
+```go
+func loggingMiddleware(lw *logw.Wrapper, next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        reqLogger := slog.Default().With(
+            "request_id", r.Header.Get("X-Request-ID"),
+            "trace_id",   r.Header.Get("X-Trace-ID"),
+        )
+        ctx := logw.WithLogger(r.Context(), reqLogger)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+Logger resolution order (first non-nil wins):
+
+1. Logger returned by `WithLoggerFromContext` function
+2. Logger stored with `logw.WithLogger(ctx, l)`
+3. Logger set with `WithBaseLogger(l)` option
+4. `slog.Default()`
+
+### Using a non-slog logger
+
+Any structured logger can be bridged via a `slog.Handler` adapter:
+
+```go
+// zap (go.uber.org/zap/exp/zapslog)
+slogLogger := slog.New(zapslog.NewHandler(zapLogger.Core()))
+
+// zerolog (github.com/samber/slog-zerolog/v2)
+slogLogger := slog.New(slogzerolog.Option{Logger: &zeroLogger}.NewZerologHandler())
+
+lw := logw.New(dw, logw.WithBaseLogger(slogLogger))
+```
+
+For per-request loggers already stored under a custom context key, use `WithLoggerFromContext` so the Wrapper knows where to find them:
+
+```go
+lw := logw.New(dw,
+    logw.WithLoggerFromContext(func(ctx context.Context) *slog.Logger {
+        l, _ := ctx.Value(myMiddlewareKey{}).(*slog.Logger)
+        return l // nil → falls back through the resolution chain
+    }),
+)
+```
+
+---
+
+## Configuration
+
+Both `NewTable` and `NewDataset` accept functional options:
+
+```go
+// Table options
+tbl := velum.NewTable[Customer]("customers",
+    velum.WithTag("db"),                          // use "db" struct tag instead of "dbw"
+    velum.WithArgFormatter(velum.ArgAsQuestionMark), // use ? placeholders (MySQL-style)
+    velum.WithColumnNameBuilder(myNamingFunc),    // custom field→column name mapping
+    velum.WithSequenceNameBuilder(mySeqFunc),     // custom sequence name builder
+)
+
+// Dataset options
+ds := velum.NewDataset[Row](sql,
+    velum.WithDatasetTag("db"),
+    velum.WithDatasetColumnNameBuilder(myNamingFunc),
+)
+```
+
+---
+
+## Important: Use Parameterized Clauses
+
+`Table` and `CommandContainer` cache SQL strings keyed by the exact `(scope, clause)` pair. This cache grows by one entry per **unique clause string** and is never evicted.
+
+With fixed, parameterized clauses the cache stays tiny and stable for the life of the process:
+
+```go
+// ✅ Good — fixed clause string, parameterized value. One cache entry forever.
+tbl.Select(ctx, dbw, "*", "WHERE status=$1 ORDER BY created_at DESC", status)
+```
+
+If you build the clause string dynamically with inline values, each unique string produces a new, permanent cache entry — a gradual memory leak for long-running services:
+
+```go
+// ❌ Bad — new cache entry on every distinct value of id.
+tbl.Select(ctx, dbw, "*", fmt.Sprintf("WHERE id = %d", id))
+```
+
+The same rule applies to `Dataset`: build your `ClauseSet` with parameterized SQL and pass values as `Select`/`Get` arguments.
+
+---
+
+## Tests and Performance
+
+```sh
+go test ./...
+```
+
+Tests are organised in three tiers:
+
+- **Unit tests** — pure Go, no database required. Cover SQL-building helpers, struct-tag parsing, placeholder shifting, and other stateless logic.
+- **Fake-DB tests** — use minimal in-process stubs that satisfy the `velum.DatabaseWrapper` interface. Exercise every `Table` and `Dataset` method (Insert, Select, Update, Delete, Exist, Count, …) without spinning up a real database.
+- **Integration tests** — spin up a PostgreSQL container via [testcontainers-go](https://github.com/testcontainers/testcontainers-go) and run end-to-end scenarios covering CRUD, scopes, soft deletes, optimistic locking, dataset joins, and memory stability.
+
+Benchmarks in `table_bench_test.go` compare raw pgx against Velum for primary-key lookups and updates. Velum stays within a few nanoseconds of hand-written SQL thanks to pre-built command strings and pooled scan buffers — `0.00 allocs/cycle` once the pools are warm.
+
+---
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

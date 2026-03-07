@@ -13,7 +13,7 @@ func Test_newClauseWithPK(t *testing.T) {
 			Name:                  "id",
 			Path:                  []int{0},
 			Tag:                   reflectx.TagPairs{"scope": {"pk"}},
-			ValueGenerationMethod: SerialFieleType,
+			ValueGenerationMethod: SerialFieldType,
 		},
 		Pos: 0,
 	}
