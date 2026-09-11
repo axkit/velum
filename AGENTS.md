@@ -371,3 +371,10 @@ func (db *fakeDB) InTx(ctx context.Context, fn func(velum.Transaction) error) er
 
 Pass `&fakeDB{}` wherever a `velum.DatabaseWrapper` is required. This covers
 all Table and Dataset method paths without testcontainers.
+
+
+---
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

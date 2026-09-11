@@ -534,6 +534,89 @@ Benchmarks in `table_bench_test.go` compare raw pgx against Velum for primary-ke
 
 ---
 
+## Pre-built Commands
+
+Every `Table` method (`GetByPK`, `UpdateByPK`, …) builds the SQL string once and caches it inside a `CommandContanier`. You can bypass the high-level helpers and talk to that cache directly — useful when the SQL is always the same and you want the command object stored as a struct field so the cache look-up itself is skipped on the hot path.
+
+### Obtaining the CommandContanier
+
+```go
+cc := tbl.CommandContainer()
+```
+
+`CommandContanier` exposes one builder method per statement type:
+
+| Method | Returns | Use for |
+|---|---|---|
+| `cc.Select(scope, clauses)` | `SelectCommand[T]` | SELECT |
+| `cc.Insert(scope)` | `Command[T]` | INSERT without RETURNING |
+| `cc.InsertReturning(argScope, retScope)` | `ReturningCommand[T]` | INSERT … RETURNING |
+| `cc.Update(scope, ByPK())` | `Command[T]` | UPDATE by PK |
+| `cc.Update(scope, ByClauses(sql))` | `Command[T]` | UPDATE by arbitrary clause |
+| `cc.UpdateReturning(argScope, retScope, condition)` | `ReturningCommand[T]` | UPDATE … RETURNING |
+| `cc.Delete(clauses)` | `Command[T]` | DELETE |
+| `cc.DeleteReturning(retScope, clauses)` | `ReturningCommand[T]` | DELETE … RETURNING |
+
+Each call builds the SQL on the first invocation and returns the cached value on every subsequent call. The returned command objects are value types and are safe to store in struct fields and share across goroutines.
+
+### Storing commands in a repository
+
+```go
+type ProductRepo struct {
+    tbl          *velum.Table[Product]
+    byCategory   velum.SelectCommand[Product]  // SELECT … WHERE category=$1
+    deactivate   velum.Command[Product]         // UPDATE … SET active=false WHERE id=$1
+}
+
+func NewProductRepo() *ProductRepo {
+    tbl := velum.NewTable[Product]("products")
+    cc  := tbl.CommandContainer()
+    return &ProductRepo{
+        tbl:        tbl,
+        byCategory: cc.Select("price,stock", "WHERE category=$1 AND active=$2 ORDER BY name"),
+        deactivate: cc.Update("active", velum.ByPK()),
+    }
+}
+
+// GetByCategory uses the pre-built SelectCommand directly — no cache look-up,
+// no SQL string construction on the hot path.
+func (r *ProductRepo) GetByCategory(ctx context.Context, db velum.DatabaseWrapper, cat string, active bool) ([]Product, error) {
+    return r.byCategory.GetMany(ctx, db, cat, active)
+}
+
+func (r *ProductRepo) Deactivate(ctx context.Context, db velum.DatabaseWrapper, p *Product) error {
+    p.Active = false
+    _, err := r.deactivate.Exec(ctx, db, p)
+    return err
+}
+```
+
+### Executing command objects
+
+| Command type | Methods available |
+|---|---|
+| `SelectCommand[T]` | `Get(ctx, db, args…) (*T, error)` — single row |
+| | `GetMany(ctx, db, args…) ([]T, error)` — multiple rows |
+| | `GetToPtr(ctx, db, dst []any, args…) error` — scan into caller-owned pointers |
+| `Command[T]` | `Exec(ctx, db, row *T, args…) (Result, error)` |
+| `ReturningCommand[T]` | `QueryRow(ctx, db, row *T, args…) (*T, error)` — allocates new T |
+| | `QueryRowTo(ctx, db, row *T, args…) error` — scans into existing T |
+| | `Query(ctx, db, args…) ([]T, error)` — multiple rows |
+
+For `Exec` and `QueryRow`, field values are extracted from the `*T` argument in the order defined by the scope. Extra `args` appended after `row` are bound to the remaining `$N` placeholders (typically the WHERE clause arguments).
+
+```go
+// Example: UPDATE SET price=$1, stock=$2 WHERE id=$3
+_, err := updateCmd.Exec(ctx, db, &product)
+
+// Example: SELECT … WHERE category=$1 AND active=$2
+rows, err := selectCmd.GetMany(ctx, db, "electronics", true)
+```
+
+> **Tip:** use pre-built commands only when the WHERE clause is truly static. For queries whose clause string varies at runtime, the regular `tbl.Select` / `tbl.Update` helpers are equivalent — they perform the same cache look-up internally.
+
+---
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
