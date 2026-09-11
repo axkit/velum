@@ -118,10 +118,13 @@ func (c *SelectCommand[T]) GetMany(ctx context.Context, q QueryExecuter, args ..
 	defer rows.Close()
 
 	var result []T
-	var row T
+	var row, zero T
 	rets := c.sfpe.StructFieldPtrs(&row, c.cpos)
 	defer c.sfpe.Release(rets)
 	for rows.Next() {
+		// Reset row so values from the previous row can't leak into this one
+		// (e.g. a Scanner that reuses the existing slice backing array).
+		row = zero
 		if err := rows.Scan(*rets...); err != nil {
 			return nil, err
 		}
@@ -195,10 +198,13 @@ func (c *ReturningCommand[T]) Query(ctx context.Context, q QueryExecuter, args .
 	defer rows.Close()
 
 	var result []T
-	var row T
+	var row, zero T
 	rets := c.sfpe.StructFieldPtrs(&row, c.rets)
 	defer c.sfpe.Release(rets)
 	for rows.Next() {
+		// Reset row so values from the previous row can't leak into this one
+		// (e.g. a Scanner that reuses the existing slice backing array).
+		row = zero
 		if err := rows.Scan(*rets...); err != nil {
 			return nil, err
 		}
