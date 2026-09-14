@@ -43,7 +43,7 @@ func (dw *DatabaseWrapper) IsNotFound(err error) bool {
 
 // InTx executes fn inside a pgx transaction. The transaction is committed if
 // fn returns nil; otherwise it is rolled back.
-func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
+func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) (err error) {
 	tx, err := dw.Begin(ctx)
 	if err != nil {
 		return err

@@ -699,6 +699,19 @@ func TestWrapper_InTx_RollbackOnError(t *testing.T) {
 	assertStr(t, "outcome", "rolled_back", flatAttrs(h.last()))
 }
 
+func TestWrapper_InTx_CommitError(t *testing.T) {
+	h := &recHandler{}
+	db := defaultDB()
+	commitErr := errors.New("commit failed")
+	db.tx = &fakeTx{commitErr: commitErr}
+	w := logw.New(db, logw.WithBaseLogger(newLogger(h)))
+
+	err := w.InTx(context.Background(), func(tx velum.Transaction) error { return nil })
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("want commitErr, got %v", err)
+	}
+}
+
 func TestExecContext_Error(t *testing.T) {
 	h := &recHandler{}
 	db := defaultDB()

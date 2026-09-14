@@ -131,21 +131,19 @@ func (w *Wrapper) Begin(ctx context.Context) (velum.Transaction, error) {
 
 // InTx executes fn in a transaction. Delegates to Begin so the transaction
 // summary is logged via loggableTx.
-func (w *Wrapper) InTx(ctx context.Context, fn func(velum.Transaction) error) error {
+func (w *Wrapper) InTx(ctx context.Context, fn func(velum.Transaction) error) (err error) {
 	tx, err := w.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	var fnErr error
 	defer func() {
-		if fnErr != nil {
+		if err != nil {
 			tx.Rollback(ctx)
 		} else {
-			fnErr = tx.Commit(ctx)
+			err = tx.Commit(ctx)
 		}
 	}()
-	fnErr = fn(tx)
-	return fnErr
+	return fn(tx)
 }
 
 // ExecContext executes a statement and logs its duration.
@@ -275,7 +273,6 @@ func captureRow(dest []any) []any {
 	return vals
 }
 
-
 func (w *Wrapper) emitExec(ctx context.Context, sql string, args []any, txID uint64, dur time.Duration, res velum.Result, err error) {
 	attrs := []slog.Attr{
 		slog.String("op", "exec"),
@@ -380,7 +377,7 @@ type loggableRows struct {
 	firstSeen    bool
 	rowCount     int
 	txID         uint64
-	capturedRows [][]any // up to w.logRows rows, nil when logRows == 0
+	capturedRows [][]any  // up to w.logRows rows, nil when logRows == 0
 	cols         []string // lazily populated from columnsNamer on first Scan
 }
 
