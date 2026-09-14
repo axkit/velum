@@ -41,10 +41,23 @@ func (dw *DatabaseWrapper) IsNotFound(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
 
-// InTx executes fn inside a pgx transaction. The transaction is committed if
-// fn returns nil; otherwise it is rolled back.
-func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) (err error) {
-	tx, err := dw.Begin(ctx)
+// IsRetryable reports whether err is a serialization failure or a deadlock,
+// which abort the transaction and can be resolved by running it again.
+func (dw *DatabaseWrapper) IsRetryable(err error) bool {
+	return velum.IsRetryableSQLState(err)
+}
+
+// InTx executes fn inside a pgx transaction using the server default
+// isolation level. The transaction is committed if fn returns nil; otherwise
+// it is rolled back.
+func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
+	return dw.InTxWith(ctx, velum.TxOptions{}, fn)
+}
+
+// InTxWith executes fn inside a pgx transaction started with opts. The
+// transaction is committed if fn returns nil; otherwise it is rolled back.
+func (dw *DatabaseWrapper) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(tx velum.Transaction) error) (err error) {
+	tx, err := dw.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -59,13 +72,38 @@ func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transactio
 	return fn(tx)
 }
 
-// Begin starts a new pgx transaction and returns it as a velum.Transaction.
+// Begin starts a new pgx transaction with the server default isolation level
+// and returns it as a velum.Transaction.
 func (dw *DatabaseWrapper) Begin(ctx context.Context) (velum.Transaction, error) {
-	tx, err := dw.db.Begin(ctx)
+	return dw.BeginTx(ctx, velum.TxOptions{})
+}
+
+// BeginTx starts a new pgx transaction with opts and returns it as a
+// velum.Transaction.
+func (dw *DatabaseWrapper) BeginTx(ctx context.Context, opts velum.TxOptions) (velum.Transaction, error) {
+	tx, err := dw.db.BeginTx(ctx, pgxTxOptions(opts))
 	if err != nil {
 		return nil, err
 	}
 	return &TransactionWrapper{tx: tx}, nil
+}
+
+// pgxTxOptions translates velum transaction options into pgx ones. An unset
+// IsoLevel or AccessMode leaves the corresponding BEGIN clause out entirely.
+func pgxTxOptions(o velum.TxOptions) pgx.TxOptions {
+	res := pgx.TxOptions{}
+	switch o.IsoLevel {
+	case velum.ReadCommitted:
+		res.IsoLevel = pgx.ReadCommitted
+	case velum.RepeatableRead:
+		res.IsoLevel = pgx.RepeatableRead
+	case velum.Serializable:
+		res.IsoLevel = pgx.Serializable
+	}
+	if o.ReadOnly {
+		res.AccessMode = pgx.ReadOnly
+	}
+	return res
 }
 
 // ResultWrapper adapts pgconn.CommandTag's RowsAffected count to velum.Result.

@@ -326,6 +326,45 @@ err := db.InTx(ctx, func(tx velum.Transaction) error {
 `velum.DatabaseWrapper`, so every Table and Dataset method works unchanged
 inside a transaction.
 
+## Isolation levels
+
+`InTx` uses the server default (READ COMMITTED in PostgreSQL). To pick a level,
+use `InTxWith`:
+
+```go
+err := velum.InTxWith(ctx, db, velum.TxOptions{IsoLevel: velum.RepeatableRead},
+    func(tx velum.Transaction) error {
+        // every statement here sees one snapshot
+        return nil
+    })
+```
+
+Levels: `velum.IsoDefault` (zero value, nothing is set), `ReadCommitted`,
+`RepeatableRead`, `Serializable`. `TxOptions.ReadOnly` starts a read-only
+transaction.
+
+`velum.InTxWith` and `velum.BeginTx` are helpers that accept any
+`DatabaseWrapper`; they return `velum.ErrTxOptionsUnsupported` when the wrapper
+does not implement `velum.TxDatabaseWrapper`. `sqlw`, `pgxw` and `logw` all do.
+Wrappers written elsewhere keep compiling, because `DatabaseWrapper` itself is
+unchanged.
+
+**Retries are the caller's job.** Under `RepeatableRead` and `Serializable`,
+PostgreSQL aborts a transaction that conflicts with a concurrent write
+(SQLSTATE 40001), and the whole transaction has to run again from the start:
+
+```go
+for attempt := 0; attempt < 3; attempt++ {
+    err = velum.InTxWith(ctx, db, opts, fn)
+    if err == nil || !velum.IsRetryable(db, err) {
+        break
+    }
+}
+```
+
+`IsRetryable` covers 40001 (serialization failure) and 40P01 (deadlock). Only
+retry when `fn` is safe to run more than once.
+
 ## Critical: always use parameterized clauses
 
 `Table` caches SQL strings keyed by the exact `(scope, clause)` pair. The

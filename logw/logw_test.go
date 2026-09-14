@@ -699,6 +699,94 @@ func TestWrapper_InTx_RollbackOnError(t *testing.T) {
 	assertStr(t, "outcome", "rolled_back", flatAttrs(h.last()))
 }
 
+// fakeTxDB adds transaction options support on top of fakeDB.
+type fakeTxDB struct {
+	*fakeDB
+	gotOpts   velum.TxOptions
+	retryable bool
+}
+
+func (db *fakeTxDB) BeginTx(ctx context.Context, opts velum.TxOptions) (velum.Transaction, error) {
+	db.gotOpts = opts
+	return db.Begin(ctx)
+}
+
+func (db *fakeTxDB) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(velum.Transaction) error) error {
+	db.gotOpts = opts
+	tx, err := db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (db *fakeTxDB) IsRetryable(error) bool { return db.retryable }
+
+// Options must reach the underlying wrapper and the level must be logged.
+func TestWrapper_InTxWith_Forwards(t *testing.T) {
+	h := &recHandler{}
+	db := &fakeTxDB{fakeDB: defaultDB()}
+	w := logw.New(db, logw.WithBaseLogger(newLogger(h)))
+	ctx := context.Background()
+
+	opts := velum.TxOptions{IsoLevel: velum.RepeatableRead, ReadOnly: true}
+	err := w.InTxWith(ctx, opts, func(tx velum.Transaction) error { return nil })
+	if err != nil {
+		t.Fatalf("InTxWith returned %v", err)
+	}
+	if db.gotOpts != opts {
+		t.Errorf("underlying wrapper got %+v, want %+v", db.gotOpts, opts)
+	}
+	assertStr(t, "isolation", "repeatable read", flatAttrs(h.last()))
+}
+
+// A wrapper without options support must fail loudly, never silently downgrade.
+func TestWrapper_InTxWith_Unsupported(t *testing.T) {
+	w := logw.New(defaultDB(), logw.WithBaseLogger(newLogger(&recHandler{})))
+
+	err := w.InTxWith(context.Background(), velum.TxOptions{IsoLevel: velum.RepeatableRead},
+		func(tx velum.Transaction) error { return nil })
+	if !errors.Is(err, velum.ErrTxOptionsUnsupported) {
+		t.Fatalf("want ErrTxOptionsUnsupported, got %v", err)
+	}
+
+	if _, err := w.BeginTx(context.Background(), velum.TxOptions{IsoLevel: velum.Serializable}); !errors.Is(err, velum.ErrTxOptionsUnsupported) {
+		t.Fatalf("BeginTx: want ErrTxOptionsUnsupported, got %v", err)
+	}
+}
+
+// Plain InTx keeps working over a wrapper without options support.
+func TestWrapper_InTx_WorksWithoutOptionsSupport(t *testing.T) {
+	h := &recHandler{}
+	w := logw.New(defaultDB(), logw.WithBaseLogger(newLogger(h)))
+
+	err := w.InTx(context.Background(), func(tx velum.Transaction) error { return nil })
+	if err != nil {
+		t.Fatalf("InTx returned %v", err)
+	}
+	if got, ok := flatAttrs(h.last())["isolation"]; ok {
+		t.Errorf("isolation logged as %v for a default transaction, want nothing", got)
+	}
+}
+
+func TestWrapper_IsRetryable(t *testing.T) {
+	w := logw.New(&fakeTxDB{fakeDB: defaultDB(), retryable: true},
+		logw.WithBaseLogger(newLogger(&recHandler{})))
+	if !w.IsRetryable(errors.New("conflict")) {
+		t.Error("IsRetryable = false, want true")
+	}
+
+	// fakeDB alone cannot classify errors.
+	plain := logw.New(defaultDB(), logw.WithBaseLogger(newLogger(&recHandler{})))
+	if plain.IsRetryable(errors.New("conflict")) {
+		t.Error("IsRetryable = true for a wrapper without support, want false")
+	}
+}
+
 func TestWrapper_InTx_CommitError(t *testing.T) {
 	h := &recHandler{}
 	db := defaultDB()

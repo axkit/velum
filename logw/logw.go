@@ -114,28 +114,66 @@ func New(dw velum.DatabaseWrapper, opts ...Option) *Wrapper {
 // IsNotFound delegates to the underlying DatabaseWrapper.
 func (w *Wrapper) IsNotFound(err error) bool { return w.dw.IsNotFound(err) }
 
-// Begin starts a transaction. The returned Transaction wraps each query with
-// per-query logging and emits a summary entry on Commit or Rollback.
+// IsRetryable delegates to the underlying DatabaseWrapper. It reports false
+// when that wrapper cannot classify errors.
+func (w *Wrapper) IsRetryable(err error) bool { return velum.IsRetryable(w.dw, err) }
+
+// Begin starts a transaction with the server default isolation level. The
+// returned Transaction wraps each query with per-query logging and emits a
+// summary entry on Commit or Rollback.
 func (w *Wrapper) Begin(ctx context.Context) (velum.Transaction, error) {
 	tx, err := w.dw.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return w.wrapTx(tx, velum.IsoDefault), nil
+}
+
+// BeginTx starts a transaction with opts. It returns
+// velum.ErrTxOptionsUnsupported when the underlying wrapper cannot apply them,
+// so that a requested isolation level is never silently dropped by logging.
+func (w *Wrapper) BeginTx(ctx context.Context, opts velum.TxOptions) (velum.Transaction, error) {
+	tx, err := velum.BeginTx(ctx, w.dw, opts)
+	if err != nil {
+		return nil, err
+	}
+	return w.wrapTx(tx, opts.IsoLevel), nil
+}
+
+// wrapTx decorates tx with per-query logging and a transaction summary.
+func (w *Wrapper) wrapTx(tx velum.Transaction, iso velum.IsoLevel) *loggableTx {
 	return &loggableTx{
 		Transaction: tx,
 		w:           w,
 		start:       time.Now(),
 		txID:        rand.Uint64(),
-	}, nil
+		iso:         iso,
+	}
 }
 
 // InTx executes fn in a transaction. Delegates to Begin so the transaction
 // summary is logged via loggableTx.
-func (w *Wrapper) InTx(ctx context.Context, fn func(velum.Transaction) error) (err error) {
+func (w *Wrapper) InTx(ctx context.Context, fn func(velum.Transaction) error) error {
 	tx, err := w.Begin(ctx)
 	if err != nil {
 		return err
 	}
+	return runInTx(ctx, tx, fn)
+}
+
+// InTxWith executes fn in a transaction started with opts. Delegates to
+// BeginTx, so an underlying wrapper without options support fails loudly.
+func (w *Wrapper) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(velum.Transaction) error) error {
+	tx, err := w.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	return runInTx(ctx, tx, fn)
+}
+
+// runInTx commits tx when fn succeeds and rolls it back otherwise. The named
+// result is what makes the deferred func see fn's error.
+func runInTx(ctx context.Context, tx velum.Transaction, fn func(velum.Transaction) error) (err error) {
 	defer func() {
 		if err != nil {
 			tx.Rollback(ctx)
@@ -437,6 +475,7 @@ type loggableTx struct {
 	start  time.Time
 	txID   uint64
 	nQuery int
+	iso    velum.IsoLevel // logged in the summary when not velum.IsoDefault
 }
 
 func (t *loggableTx) ExecContext(ctx context.Context, sql string, args ...any) (velum.Result, error) {
@@ -501,6 +540,9 @@ func (t *loggableTx) emitSummary(ctx context.Context, outcome string, err error)
 		slog.String("outcome", outcome),
 		slog.Duration("total_dur", dur),
 		slog.Int("queries", t.nQuery),
+	}
+	if t.iso != velum.IsoDefault {
+		attrs = append(attrs, slog.String("isolation", t.iso.String()))
 	}
 	if err != nil {
 		attrs = append(attrs, slog.Any("error", err))

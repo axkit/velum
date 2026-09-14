@@ -89,10 +89,25 @@ func (dw *DatabaseWrapper) QueryContext(ctx context.Context, sql string, args ..
 	return dw.db.QueryContext(ctx, sql, args...)
 }
 
-// InTx executes fn inside a database/sql transaction. The transaction is
-// committed if fn returns nil; otherwise it is rolled back.
-func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) (err error) {
-	tx, err := dw.Begin(ctx)
+// IsRetryable reports whether err is a serialization failure or a deadlock,
+// which abort the transaction and can be resolved by running it again. It
+// recognises any driver error exposing SQLState() string, so sqlw stays
+// independent of a particular database/sql driver.
+func (dw *DatabaseWrapper) IsRetryable(err error) bool {
+	return velum.IsRetryableSQLState(err)
+}
+
+// InTx executes fn inside a database/sql transaction using the server default
+// isolation level. The transaction is committed if fn returns nil; otherwise
+// it is rolled back.
+func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transaction) error) error {
+	return dw.InTxWith(ctx, velum.TxOptions{}, fn)
+}
+
+// InTxWith executes fn inside a database/sql transaction started with opts.
+// The transaction is committed if fn returns nil; otherwise it is rolled back.
+func (dw *DatabaseWrapper) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(tx velum.Transaction) error) (err error) {
+	tx, err := dw.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -104,16 +119,38 @@ func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transactio
 		}
 	}()
 
-	return fn(&tx)
+	return fn(tx)
 }
 
-// Begin starts a new database/sql transaction and returns a TransactionWrapper.
-func (dw *DatabaseWrapper) Begin(ctx context.Context) (TransactionWrapper, error) {
-	tx, err := dw.db.BeginTx(ctx, nil)
+// Begin starts a new database/sql transaction with the server default
+// isolation level and returns it as a velum.Transaction.
+func (dw *DatabaseWrapper) Begin(ctx context.Context) (velum.Transaction, error) {
+	return dw.BeginTx(ctx, velum.TxOptions{})
+}
+
+// BeginTx starts a new database/sql transaction with opts and returns it as a
+// velum.Transaction.
+func (dw *DatabaseWrapper) BeginTx(ctx context.Context, opts velum.TxOptions) (velum.Transaction, error) {
+	tx, err := dw.db.BeginTx(ctx, sqlTxOptions(opts))
 	if err != nil {
-		return TransactionWrapper{}, err
+		return nil, err
 	}
-	return TransactionWrapper{tx: tx}, nil
+	return &TransactionWrapper{tx: tx}, nil
+}
+
+// sqlTxOptions translates velum transaction options into database/sql ones.
+// An unset IsoLevel maps to sql.LevelDefault, leaving the choice to the driver.
+func sqlTxOptions(o velum.TxOptions) *sql.TxOptions {
+	res := &sql.TxOptions{ReadOnly: o.ReadOnly}
+	switch o.IsoLevel {
+	case velum.ReadCommitted:
+		res.Isolation = sql.LevelReadCommitted
+	case velum.RepeatableRead:
+		res.Isolation = sql.LevelRepeatableRead
+	case velum.Serializable:
+		res.Isolation = sql.LevelSerializable
+	}
+	return res
 }
 
 // Commit commits the transaction.

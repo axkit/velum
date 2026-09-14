@@ -361,6 +361,41 @@ Two reference wrappers are included:
 
 Swapping drivers is just a one-line constructor change. You can also implement the interfaces yourself if you need custom middleware, tracing, or a different driver.
 
+### Transaction isolation levels
+
+`InTx` starts a transaction with the server default isolation level, which is READ COMMITTED in PostgreSQL. When a transaction needs a consistent snapshot across several statements, choose the level explicitly:
+
+```go
+err := velum.InTxWith(ctx, db, velum.TxOptions{IsoLevel: velum.RepeatableRead},
+    func(tx velum.Transaction) error {
+        rows, err := orders.Select(ctx, tx, velum.FullScope, "WHERE customer_id = $1", id)
+        if err != nil {
+            return err
+        }
+        // Both statements observe the same snapshot of the database.
+        summary := summarize(rows)
+        return reports.Insert(ctx, tx, &summary)
+    })
+```
+
+The available levels are `velum.IsoDefault` (the zero value, which leaves the level unset), `velum.ReadCommitted`, `velum.RepeatableRead` and `velum.Serializable`. Setting `TxOptions.ReadOnly` starts the transaction in read-only mode.
+
+`velum.InTxWith` and `velum.BeginTx` accept any `DatabaseWrapper` and return `velum.ErrTxOptionsUnsupported` if that wrapper cannot apply the options, so a requested isolation level is never silently ignored. The bundled `sqlw`, `pgxw` and `logw` wrappers all support them.
+
+Under REPEATABLE READ and SERIALIZABLE, PostgreSQL aborts a transaction whose changes conflict with a concurrent one. Such a transaction must be run again from the beginning, and only the caller knows whether that is safe:
+
+```go
+var err error
+for attempt := 0; attempt < 3; attempt++ {
+    err = velum.InTxWith(ctx, db, opts, fn)
+    if err == nil || !velum.IsRetryable(db, err) {
+        break
+    }
+}
+```
+
+`velum.IsRetryable` recognises serialization failures (SQLSTATE 40001) and deadlocks (40P01).
+
 ---
 
 ## Query Logging
