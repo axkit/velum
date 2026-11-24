@@ -260,6 +260,57 @@ _, err = tbl.SoftDeleteByPK(ctx, dbw, &c)
 deleted, err := tbl.SoftDeleteReturningByPK(ctx, dbw, &c)
 ```
 
+### UPSERT (`INSERT … ON CONFLICT`)
+
+Upsert commands are prepared once — at startup or in a package-level variable — and executed many times. `UpsertCommand` returns an error for an invalid configuration; `MustUpsertCommand` panics with it.
+
+```go
+var priceUpsert = prices.MustUpsertCommand(velum.FullScope, velum.OnConflict{
+    Target:      "(sku)",              // verbatim after ON CONFLICT
+    Action:      velum.DoUpdate,
+    UpdateScope: "price",              // col=EXCLUDED.col for every column of the scope
+})
+
+_, err := priceUpsert.Exec(ctx, db, &p)
+// INSERT INTO product_prices AS t (sku,price,currency,note,row_version,created_at,updated_at) VALUES ($1,…,$7)
+// ON CONFLICT (sku) DO UPDATE SET price=EXCLUDED.price,currency=EXCLUDED.currency,row_version=t.row_version+1,updated_at=$8
+```
+
+`OnConflict` fields — all fixed SQL constants; values only through `$N`:
+
+| Field | Meaning |
+|---|---|
+| `Target` | Text after `ON CONFLICT`: `"(a, b)"`, `"(workspace_id, lower(name))"`, `"(x) WHERE x IS NOT NULL"`, `"ON CONSTRAINT pk_x"`. Empty — no target (`DoNothing` only). |
+| `Action` | `velum.DoNothing` (zero value) or `velum.DoUpdate`. |
+| `UpdateScope` | Columns set to `EXCLUDED.col`. Must be part of the insert scope. |
+| `UpdateExpr` | Extra assignments: `"count = t.count + 1, checked_at = now()"`. |
+| `UpdateWhere` | Condition of the update: `"WHERE t.color <> EXCLUDED.color"`. When false, the row is not touched. |
+
+Rules:
+
+- The table is always aliased as `t`: refer to the existing row as `t.col` and to the proposed one as `EXCLUDED.col`.
+- `$N` in `UpdateExpr` and `UpdateWhere` start at `$1` and are bound to the arguments after the row; velum renumbers them after the insert values.
+- On `DO UPDATE` velum sets the system columns like `UpdateByPK`: `row_version=t.row_version+1` and `updated_at=$k` from the row. `UpdateExpr` must not assign them; `created_at` and the delete columns are left alone.
+- Every `DO UPDATE` bumps the version, so do not write no-op updates (`SET x = t.x`) to get `RETURNING` or a row lock: use `DO NOTHING RETURNING` and `SELECT … FOR UPDATE` when the row already existed.
+
+With `RETURNING`, `QueryRow` reports what happened:
+
+```go
+var wsAdd = repoWs.MustUpsertReturningCommand(velum.FullScope, velum.FullScope,
+    velum.OnConflict{Target: "(workspace_id)"})
+
+got, outcome, err := wsAdd.QueryRow(ctx, tx, &ws)
+switch outcome {
+case velum.UpsertInserted: // new row, got holds the RETURNING columns
+case velum.UpsertUpdated:  // existing row updated
+case velum.UpsertSkipped:  // DO NOTHING on a conflict or UpdateWhere was false; got == nil, err == nil
+}
+```
+
+An invalid configuration is a `*velum.UpsertConfigError` (`errors.Is(err, velum.ErrInvalidUpsert)`) carrying the table, the caller's `file:line`, the reason and the SQL that would have run.
+
+Multi-row upserts and `INSERT … SELECT` are not covered by `Table`; run them as constant SQL through `db.ExecContext`.
+
 ---
 
 ## System Columns and Automatic Behaviors

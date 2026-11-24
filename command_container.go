@@ -71,6 +71,7 @@ type CommandContanier[T any] struct {
 	sel          map[SingleScopeKey]SelectCommand[T]
 	cmd          [CommandTypeEnumMax_]map[SingleScopeKey]Command[T]
 	retCmd       [CommandTypeEnumMax_]map[DoubleScopeKey]ReturningCommand[T]
+	ups          map[upsertKey]UpsertCommand[T]
 }
 
 // NewCommandContainer creates a CommandContanier for the given table. It is
@@ -88,6 +89,7 @@ func NewCommandContainer[T any](
 		sfpe:   sfpe,
 		sel:    make(map[SingleScopeKey]SelectCommand[T]),
 		fn:     make(map[FuncCommandKey]FunctionalCommand[T]),
+		ups:    make(map[upsertKey]UpsertCommand[T]),
 	}
 
 	for i := range CommandTypeEnumMax_ {
