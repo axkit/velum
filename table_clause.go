@@ -91,7 +91,7 @@ func newClause(typ clauseType, t Tabler, ss scopeSet) clause {
 	}
 
 	for i := range cols {
-		if pk.Pos == i {
+		if pkPos == i {
 			continue
 		}
 		col := &cols[i]

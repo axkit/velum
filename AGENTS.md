@@ -64,13 +64,14 @@ scopes assigned to it.
 
 ## Primary key limitation
 
-`Table[T]` supports **single-column primary keys only**. The PK is detected from
-the first field named `id` or the first field tagged `dbw:"pk"`. Only one column
-is ever used as the PK regardless of how many fields carry the tag.
+`Table[T]` supports **single-column primary keys only**. The PK is the field
+tagged `dbw:"pk"` (at most one) or, without that tag, the field named `id`.
 
 Do not generate code that expects composite PK support from `ByPK` methods — it
-does not exist. For tables with composite keys, omit the `pk` tag entirely and
-use clause-based methods instead:
+does not exist. `NewTable` panics when `dbw:"pk"` is set on more than one field.
+For tables with composite keys, omit the `pk` tag entirely and use clause-based
+methods instead; on such a table every `ByPK` method returns
+`velum.ErrNoPrimaryKey` without executing SQL:
 
 ```go
 // Composite PK table — no id field, no dbw:"pk".
@@ -84,9 +85,14 @@ tbl := velum.NewTable[OrderItem]("order_items")
 // All ByPK methods are unavailable. Use clause-based equivalents.
 item, err  := tbl.Get(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 rows, err  := tbl.Select(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
-_, err      = tbl.Update(ctx, db, &item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Update(ctx, db, item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+// UPDATE order_items SET qty=$1 WHERE order_id=$2 AND sku=$3
 _, err      = tbl.Delete(ctx, db, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 ```
+
+In `Update` and `UpdateReturning` start the clause placeholders at `$1`; velum
+renumbers them to follow the SET arguments taken from the row. Do not hardcode
+the shifted numbers.
 
 ## Scopes
 

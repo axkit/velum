@@ -118,25 +118,28 @@ UpdatedAt *time.Time `dbw:"update"`             // system update scope
 
 ### Primary key limitation
 
-`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. Only the first matching field is used.
+`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. `NewTable` panics when `dbw:"pk"` is set on more than one field.
 
-Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) will not be available. Use the clause-based alternatives instead:
+Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) return `velum.ErrNoPrimaryKey` without touching the database. Use the clause-based alternatives instead:
 
 ```go
 // Composite PK table — no id field, no dbw:"pk" tag.
 type OrderItem struct {
     OrderID int
     SKU     string
-    Qty     int
+    Qty     int `dbw:"qty"`
 }
 tbl := velum.NewTable[OrderItem]("order_items")
 
 // Use clause-based methods instead of ByPK variants.
 item, err := tbl.Get(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 rows, err  := tbl.Select(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
-_, err      = tbl.Update(ctx, db, &item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Update(ctx, db, item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+// UPDATE order_items SET qty=$1 WHERE order_id=$2 AND sku=$3
 _, err      = tbl.Delete(ctx, db, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 ```
+
+In `Update` and `UpdateReturning` the clause placeholders start at `$1` and are bound to the trailing arguments; velum renumbers them to follow the SET arguments taken from the row.
 
 ---
 
@@ -237,7 +240,7 @@ _, err = tbl.UpdateByPK(ctx, dbw, &c, "price,stock")
 // Update by PK and return the updated row.
 updated, err := tbl.UpdateReturningByPK(ctx, dbw, &c, "price", velum.FullScope)
 
-// Update by an arbitrary clause.
+// Update by an arbitrary clause; $1 is sku, renumbered after the SET arguments.
 _, err = tbl.Update(ctx, dbw, &c, "stock", "WHERE sku=$1", sku)
 ```
 

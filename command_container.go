@@ -283,7 +283,7 @@ func buildUpdate[T any](t *Table[T], scope Scope, ct clauseType, endingClause st
 
 	sql := "UPDATE " + t.Name() + " SET " + cols.text
 	if endingClause != "" {
-		sql += " " + endingClause
+		sql += " " + shiftClauseArgs(ct, endingClause, len(cols.cpos))
 	}
 
 	return Command[T]{
@@ -291,6 +291,17 @@ func buildUpdate[T any](t *Table[T], scope Scope, ct clauseType, endingClause st
 		cpos: cols.cpos,
 		sfpe: t.cc.sfpe,
 	}
+}
+
+// shiftClauseArgs renumbers the $N placeholders of a caller's WHERE clause so
+// that they follow the n SET arguments taken from the row: $1 becomes $n+1.
+// The by-PK clause is built by velum itself with $1 bound to the PK value and
+// is returned unchanged.
+func shiftClauseArgs(ct clauseType, clauses string, n int) string {
+	if ct != ctColsUpdate {
+		return clauses
+	}
+	return ShiftParamPositions(clauses, n+1)
 }
 
 // Update returns a cached Command for an UPDATE … SET statement. condition
@@ -362,7 +373,7 @@ func buildUpdateReturning[T any](t *Table[T], argScope, retScope Scope, ct claus
 
 	sql := "UPDATE " + t.Name() + " SET " + cols.text
 	if endingClause != "" {
-		sql += " " + endingClause
+		sql += " " + shiftClauseArgs(ct, endingClause, len(cols.cpos))
 	}
 
 	sql += " RETURNING " + rets.text
