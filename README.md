@@ -415,6 +415,32 @@ Two reference wrappers are included:
 
 Swapping drivers is just a one-line constructor change. You can also implement the interfaces yourself if you need custom middleware, tracing, or a different driver.
 
+### Prepared statements and generic plans (pgx)
+
+pgx prepares every distinct SQL text once per connection and caches it (`QueryExecModeCacheStatement`, the default). Velum's constant SQL fits this well: a statement is parsed and planned once. There is one PostgreSQL behavior to know about. After five executions of a prepared statement, the server may switch to a *generic plan* that is built without the parameter values. A generic plan cannot simplify optional filters such as
+
+```sql
+WHERE ($1::bigint IS NULL OR organization_id = $1)
+  AND ($2::text   IS NULL OR status = $2)
+```
+
+so a query that used an index for the first five calls can turn into a sequential scan afterwards. To keep custom plans, set `plan_cache_mode` for the pool's connections (PostgreSQL 12+):
+
+```go
+cfg, err := pgxpool.ParseConfig(dsn)
+if err != nil {
+    return err
+}
+cfg.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
+pool, err := pgxpool.NewWithConfig(ctx, cfg)
+if err != nil {
+    return err
+}
+db := pgxw.NewDatabaseWrapper(pool)
+```
+
+The same can be set for a role with `ALTER ROLE app SET plan_cache_mode = force_custom_plan`. Alternatives are a separate constant query per filter combination, or a non-caching `DefaultQueryExecMode` in `pgx.ConnConfig`. With `database/sql` and `lib/pq`, parameterized queries use an unnamed statement on every call, so they are planned with the actual values and are not affected unless you call `Prepare` yourself.
+
 ### Transaction isolation levels
 
 `InTx` starts a transaction with the server default isolation level, which is READ COMMITTED in PostgreSQL. When a transaction needs a consistent snapshot across several statements, choose the level explicitly:
