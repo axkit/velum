@@ -1011,3 +1011,20 @@ func TestWrapper_InTx_BeginError(t *testing.T) {
 		t.Errorf("want 0 records, got %d", h.count())
 	}
 }
+
+// A panic in fn must roll the transaction back and reach the caller.
+func TestWrapper_InTx_RollbackOnPanic(t *testing.T) {
+	h := &recHandler{}
+	w := logw.New(defaultDB(), logw.WithBaseLogger(newLogger(h)))
+	ctx := context.Background()
+
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		_ = w.InTx(ctx, func(tx velum.Transaction) error { panic("fn panicked") })
+		return nil
+	}()
+	if recovered != "fn panicked" {
+		t.Fatalf("recovered %v, want the panic of fn", recovered)
+	}
+	assertStr(t, "outcome", "rolled_back", flatAttrs(h.last()))
+}

@@ -3,6 +3,7 @@ package velum_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/axkit/velum"
@@ -107,5 +108,67 @@ func TestInTx_CommitErrorReported_Pgx(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("InTx returned nil, want the COMMIT error")
+	}
+}
+
+// runInTxPanicking calls InTx with an fn that inserts marker and then panics;
+// it returns the recovered value.
+func runInTxPanicking(db velum.DatabaseWrapper, marker string) (recovered any) {
+	defer func() { recovered = recover() }()
+	_ = db.InTx(context.Background(), func(tx velum.Transaction) error {
+		if _, err := tx.ExecContext(context.Background(),
+			`INSERT INTO intx_probe (marker) VALUES ($1)`, marker); err != nil {
+			return err
+		}
+		panic("fn panicked")
+	})
+	return nil
+}
+
+// A panic in fn must roll back what fn wrote and reach the caller unchanged.
+func TestInTx_RollbackOnPanic(t *testing.T) {
+	setupInTxProbe(t)
+	for _, w := range []struct {
+		name string
+		db   velum.DatabaseWrapper
+	}{{"pgx", dbwPgx}, {"sql", dbwSql}} {
+		t.Run(w.name, func(t *testing.T) {
+			marker := w.name + "-panic"
+			if r := runInTxPanicking(w.db, marker); r != "fn panicked" {
+				t.Fatalf("recovered %v, want the panic of fn", r)
+			}
+			if n := countInTxRows(t, marker); n != 0 {
+				t.Errorf("row was committed despite the panic: found %d rows, want 0", n)
+			}
+		})
+	}
+}
+
+// runtime.Goexit in fn (t.FailNow, t.Fatal) must roll back too.
+func TestInTx_RollbackOnGoexit(t *testing.T) {
+	setupInTxProbe(t)
+	for _, w := range []struct {
+		name string
+		db   velum.DatabaseWrapper
+	}{{"pgx", dbwPgx}, {"sql", dbwSql}} {
+		t.Run(w.name, func(t *testing.T) {
+			marker := w.name + "-goexit"
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = w.db.InTx(context.Background(), func(tx velum.Transaction) error {
+					if _, err := tx.ExecContext(context.Background(),
+						`INSERT INTO intx_probe (marker) VALUES ($1)`, marker); err != nil {
+						return err
+					}
+					runtime.Goexit()
+					return nil
+				})
+			}()
+			<-done
+			if n := countInTxRows(t, marker); n != 0 {
+				t.Errorf("row was committed despite Goexit: found %d rows, want 0", n)
+			}
+		})
 	}
 }

@@ -171,17 +171,21 @@ func (w *Wrapper) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(ve
 	return runInTx(ctx, tx, fn)
 }
 
-// runInTx commits tx when fn succeeds and rolls it back otherwise. The named
-// result is what makes the deferred func see fn's error.
+// runInTx commits tx when fn succeeds and rolls it back otherwise, including
+// when fn panics or calls runtime.Goexit. The named result is what makes the
+// deferred func see fn's error.
 func runInTx(ctx context.Context, tx velum.Transaction, fn func(velum.Transaction) error) (err error) {
+	finished := false
 	defer func() {
-		if err != nil {
-			tx.Rollback(ctx)
-		} else {
-			err = tx.Commit(ctx)
+		if !finished || err != nil {
+			_ = tx.Rollback(ctx)
+			return
 		}
+		err = tx.Commit(ctx)
 	}()
-	return fn(tx)
+	err = fn(tx)
+	finished = true
+	return err
 }
 
 // ExecContext executes a statement and logs its duration.

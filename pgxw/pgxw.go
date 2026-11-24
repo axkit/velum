@@ -55,21 +55,28 @@ func (dw *DatabaseWrapper) InTx(ctx context.Context, fn func(tx velum.Transactio
 }
 
 // InTxWith executes fn inside a pgx transaction started with opts. The
-// transaction is committed if fn returns nil; otherwise it is rolled back.
+// transaction is committed if fn returns nil; otherwise, or when fn panics,
+// it is rolled back and the panic continues.
 func (dw *DatabaseWrapper) InTxWith(ctx context.Context, opts velum.TxOptions, fn func(tx velum.Transaction) error) (err error) {
 	tx, err := dw.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
+	// finished stays false when fn panics or calls runtime.Goexit: the
+	// deferred func then rolls back instead of committing a partial write,
+	// and the panic goes on unchanged.
+	finished := false
 	defer func() {
-		if err != nil {
-			tx.Rollback(ctx)
-		} else {
-			err = tx.Commit(ctx)
+		if !finished || err != nil {
+			_ = tx.Rollback(ctx)
+			return
 		}
+		err = tx.Commit(ctx)
 	}()
 
-	return fn(tx)
+	err = fn(tx)
+	finished = true
+	return err
 }
 
 // Begin starts a new pgx transaction with the server default isolation level
