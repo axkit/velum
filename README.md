@@ -118,25 +118,28 @@ UpdatedAt *time.Time `dbw:"update"`             // system update scope
 
 ### Primary key limitation
 
-`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. Only the first matching field is used.
+`Table[T]` supports **single-column primary keys only**. The PK is detected automatically from a field named `id`, or explicitly via `dbw:"pk"`. `NewTable` panics when `dbw:"pk"` is set on more than one field.
 
-Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) will not be available. Use the clause-based alternatives instead:
+Tables with composite primary keys can still be used with velum, but the PK-based convenience methods (`GetByPK`, `UpdateByPK`, `DeleteByPK`, etc.) return `velum.ErrNoPrimaryKey` without touching the database. Use the clause-based alternatives instead:
 
 ```go
 // Composite PK table — no id field, no dbw:"pk" tag.
 type OrderItem struct {
     OrderID int
     SKU     string
-    Qty     int
+    Qty     int `dbw:"qty"`
 }
 tbl := velum.NewTable[OrderItem]("order_items")
 
 // Use clause-based methods instead of ByPK variants.
 item, err := tbl.Get(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 rows, err  := tbl.Select(ctx, db, velum.FullScope, "WHERE order_id=$1 AND sku=$2", orderID, sku)
-_, err      = tbl.Update(ctx, db, &item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+_, err      = tbl.Update(ctx, db, item, "qty", "WHERE order_id=$1 AND sku=$2", orderID, sku)
+// UPDATE order_items SET qty=$1 WHERE order_id=$2 AND sku=$3
 _, err      = tbl.Delete(ctx, db, "WHERE order_id=$1 AND sku=$2", orderID, sku)
 ```
+
+In `Update` and `UpdateReturning` the clause placeholders start at `$1` and are bound to the trailing arguments; velum renumbers them to follow the SET arguments taken from the row.
 
 ---
 
@@ -237,7 +240,7 @@ _, err = tbl.UpdateByPK(ctx, dbw, &c, "price,stock")
 // Update by PK and return the updated row.
 updated, err := tbl.UpdateReturningByPK(ctx, dbw, &c, "price", velum.FullScope)
 
-// Update by an arbitrary clause.
+// Update by an arbitrary clause; $1 is sku, renumbered after the SET arguments.
 _, err = tbl.Update(ctx, dbw, &c, "stock", "WHERE sku=$1", sku)
 ```
 
@@ -256,6 +259,57 @@ _, err = tbl.SoftDeleteByPK(ctx, dbw, &c)
 // Soft delete and return the final row state.
 deleted, err := tbl.SoftDeleteReturningByPK(ctx, dbw, &c)
 ```
+
+### UPSERT (`INSERT … ON CONFLICT`)
+
+Upsert commands are prepared once — at startup or in a package-level variable — and executed many times. `UpsertCommand` returns an error for an invalid configuration; `MustUpsertCommand` panics with it.
+
+```go
+var priceUpsert = prices.MustUpsertCommand(velum.FullScope, velum.OnConflict{
+    Target:      "(sku)",              // verbatim after ON CONFLICT
+    Action:      velum.DoUpdate,
+    UpdateScope: "price",              // col=EXCLUDED.col for every column of the scope
+})
+
+_, err := priceUpsert.Exec(ctx, db, &p)
+// INSERT INTO product_prices AS t (sku,price,currency,note,row_version,created_at,updated_at) VALUES ($1,…,$7)
+// ON CONFLICT (sku) DO UPDATE SET price=EXCLUDED.price,currency=EXCLUDED.currency,row_version=t.row_version+1,updated_at=$8
+```
+
+`OnConflict` fields — all fixed SQL constants; values only through `$N`:
+
+| Field | Meaning |
+|---|---|
+| `Target` | Text after `ON CONFLICT`: `"(a, b)"`, `"(workspace_id, lower(name))"`, `"(x) WHERE x IS NOT NULL"`, `"ON CONSTRAINT pk_x"`. Empty — no target (`DoNothing` only). |
+| `Action` | `velum.DoNothing` (zero value) or `velum.DoUpdate`. |
+| `UpdateScope` | Columns set to `EXCLUDED.col`. Must be part of the insert scope. |
+| `UpdateExpr` | Extra assignments: `"count = t.count + 1, checked_at = now()"`. |
+| `UpdateWhere` | Condition of the update: `"WHERE t.color <> EXCLUDED.color"`. When false, the row is not touched. |
+
+Rules:
+
+- The table is always aliased as `t`: refer to the existing row as `t.col` and to the proposed one as `EXCLUDED.col`.
+- `$N` in `UpdateExpr` and `UpdateWhere` start at `$1` and are bound to the arguments after the row; velum renumbers them after the insert values.
+- On `DO UPDATE` velum sets the system columns like `UpdateByPK`: `row_version=t.row_version+1` and `updated_at=$k` from the row. `UpdateExpr` must not assign them; `created_at` and the delete columns are left alone.
+- Every `DO UPDATE` bumps the version, so do not write no-op updates (`SET x = t.x`) to get `RETURNING` or a row lock: use `DO NOTHING RETURNING` and `SELECT … FOR UPDATE` when the row already existed.
+
+With `RETURNING`, `QueryRow` reports what happened:
+
+```go
+var wsAdd = repoWs.MustUpsertReturningCommand(velum.FullScope, velum.FullScope,
+    velum.OnConflict{Target: "(workspace_id)"})
+
+got, outcome, err := wsAdd.QueryRow(ctx, tx, &ws)
+switch outcome {
+case velum.UpsertInserted: // new row, got holds the RETURNING columns
+case velum.UpsertUpdated:  // existing row updated
+case velum.UpsertSkipped:  // DO NOTHING on a conflict or UpdateWhere was false; got == nil, err == nil
+}
+```
+
+An invalid configuration is a `*velum.UpsertConfigError` (`errors.Is(err, velum.ErrInvalidUpsert)`) carrying the table, the caller's `file:line`, the reason and the SQL that would have run.
+
+Multi-row upserts and `INSERT … SELECT` are not covered by `Table`; run them as constant SQL through `db.ExecContext`.
 
 ---
 
@@ -360,6 +414,32 @@ Two reference wrappers are included:
 - **[`pgxw`](./pgxw/pgxw.go)** — wraps `*pgxpool.Pool` and `pgx.Tx`.
 
 Swapping drivers is just a one-line constructor change. You can also implement the interfaces yourself if you need custom middleware, tracing, or a different driver.
+
+### Prepared statements and generic plans (pgx)
+
+pgx prepares every distinct SQL text once per connection and caches it (`QueryExecModeCacheStatement`, the default). Velum's constant SQL fits this well: a statement is parsed and planned once. There is one PostgreSQL behavior to know about. After five executions of a prepared statement, the server may switch to a *generic plan* that is built without the parameter values. A generic plan cannot simplify optional filters such as
+
+```sql
+WHERE ($1::bigint IS NULL OR organization_id = $1)
+  AND ($2::text   IS NULL OR status = $2)
+```
+
+so a query that used an index for the first five calls can turn into a sequential scan afterwards. To keep custom plans, set `plan_cache_mode` for the pool's connections (PostgreSQL 12+):
+
+```go
+cfg, err := pgxpool.ParseConfig(dsn)
+if err != nil {
+    return err
+}
+cfg.ConnConfig.RuntimeParams["plan_cache_mode"] = "force_custom_plan"
+pool, err := pgxpool.NewWithConfig(ctx, cfg)
+if err != nil {
+    return err
+}
+db := pgxw.NewDatabaseWrapper(pool)
+```
+
+The same can be set for a role with `ALTER ROLE app SET plan_cache_mode = force_custom_plan`. Alternatives are a separate constant query per filter combination, or a non-caching `DefaultQueryExecMode` in `pgx.ConnConfig`. With `database/sql` and `lib/pq`, parameterized queries use an unnamed statement on every call, so they are planned with the actual values and are not affected unless you call `Prepare` yourself.
 
 ### Transaction isolation levels
 

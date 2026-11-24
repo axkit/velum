@@ -230,9 +230,10 @@ func (t *Table[T]) init() error {
 }
 
 func (t *Table[T]) initFrequentCommands() {
+	// Insert does not need a primary key, so it is built for every table.
+	t.freqCmd.insertAllFields = t.cc.InsertReturning(FullScope, FullScope)
 	if t.pk != nil {
 		t.wherePkClause = "WHERE " + t.pk.Name + "=" + t.cfg.argFormatter(1)
-		t.freqCmd.insertAllFields = t.cc.InsertReturning(FullScope, FullScope)
 		t.freqCmd.selectAllFieldsByPK = t.cc.Select(FullScope, t.wherePkClause)
 		t.freqCmd.updateAllFieldsByPK = t.cc.UpdateReturning(FullScope, FullScope, ByPK())
 		t.freqCmd.deleteByPK = "DELETE FROM " + t.name + " " + t.wherePkClause
@@ -243,12 +244,16 @@ func (t *Table[T]) initFrequentCommands() {
 func (t *Table[T]) initPrimaryKeyColumn() {
 
 	pos := -1
-	// find the tag value "pk"
+	// find the tag value "pk"; only one field may carry it.
 	for i := range t.columns {
-		if t.columns[i].Tag.PairExist(scopeTagKey, PrimaryKeyTagOption) {
-			pos = i
-			break
+		if !t.columns[i].Tag.PairExist(scopeTagKey, PrimaryKeyTagOption) {
+			continue
 		}
+		if pos != -1 {
+			panic("velum: table " + t.name + ": dbw:\"pk\" on fields " + t.columns[pos].Name + " and " +
+				t.columns[i].Name + ": composite primary keys are not supported; remove pk and use clause-based methods")
+		}
+		pos = i
 	}
 
 	// if not found, try to find the pk column by default name.
@@ -353,6 +358,9 @@ func (t *Table[T]) Scope(s string) Scope {
 //
 //	SELECT t.id, t.first_name, t.last_name, ... FROM customers t WHERE id=$1
 func (t *Table[T]) GetByPK(ctx context.Context, q QueryRowExecuter, pk any) (*T, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	return t.freqCmd.selectAllFieldsByPK.Get(ctx, q, pk)
 }
 
@@ -363,6 +371,9 @@ func (t *Table[T]) GetByPK(ctx context.Context, q QueryRowExecuter, pk any) (*T,
 // Use this when you want to control scan destinations without allocating a new
 // struct (e.g. when reusing pooled result objects externally).
 func (t *Table[T]) GetByPKTo(ctx context.Context, q QueryRowExecuter, dst []any, pk any) error {
+	if t.pk == nil {
+		return ErrNoPrimaryKey
+	}
 	return t.freqCmd.selectAllFieldsByPK.GetToPtr(ctx, q, dst, pk)
 }
 
@@ -436,11 +447,14 @@ func (t *Table[T]) InsertReturning(ctx context.Context, q QueryRowExecuter, row 
 // automatically. The primary key is not automatically used in the WHERE
 // condition; pass it as part of clauses (e.g. "WHERE sku=$1").
 //
+// Placeholders in clauses start at $1 and are bound to args; they are
+// renumbered to follow the SET arguments taken from row.
+//
 //	tbl.Update(ctx, dbw, &p, "stock", "WHERE sku=$1", sku)
-//	// UPDATE products SET stock=$2, row_version=row_version+1, updated_at=$3 WHERE sku=$1
-func (t *Table[T]) Update(ctx context.Context, q Executer, row *T, scope Scope, clauses string) (Result, error) {
+//	// UPDATE products SET stock=$1,row_version=row_version+1,updated_at=$2 WHERE sku=$3
+func (t *Table[T]) Update(ctx context.Context, q Executer, row *T, scope Scope, clauses string, args ...any) (Result, error) {
 	cmd := t.cc.Update(scope, ByClauses(clauses))
-	return cmd.Exec(ctx, q, row)
+	return cmd.Exec(ctx, q, row, args...)
 }
 
 // UpdateByPK executes an UPDATE for the columns selected by scope, using the
@@ -450,6 +464,9 @@ func (t *Table[T]) Update(ctx context.Context, q Executer, row *T, scope Scope, 
 //	tbl.UpdateByPK(ctx, dbw, &p, "price,stock")
 //	// UPDATE products SET price=$2, stock=$3, row_version=row_version+1, updated_at=$4 WHERE id=$1
 func (t *Table[T]) UpdateByPK(ctx context.Context, q Executer, row *T, scope Scope) (Result, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	cmd := t.cc.Update(scope, ByPK())
 	return cmd.Exec(ctx, q, row)
 }
@@ -460,16 +477,20 @@ func (t *Table[T]) UpdateByPK(ctx context.Context, q Executer, row *T, scope Sco
 //
 //	updated, err := tbl.UpdateReturningByPK(ctx, dbw, &p, "price", velum.FullScope)
 func (t *Table[T]) UpdateReturningByPK(ctx context.Context, q QueryRowExecuter, row *T, scope, retScope Scope) (*T, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	cmd := t.cc.UpdateReturning(scope, retScope, ByPK())
 	return cmd.QueryRow(ctx, q, row)
 }
 
 // UpdateReturning executes an UPDATE for the columns selected by scope,
 // filtered by the provided SQL clause, and returns the columns listed in
-// retScope as a newly allocated *T.
-func (t *Table[T]) UpdateReturning(ctx context.Context, q QueryRowExecuter, row *T, scope, retScope Scope, clauses string) (*T, error) {
+// retScope as a newly allocated *T. Placeholders in clauses start at $1 and
+// are bound to args, as in Update.
+func (t *Table[T]) UpdateReturning(ctx context.Context, q QueryRowExecuter, row *T, scope, retScope Scope, clauses string, args ...any) (*T, error) {
 	cmd := t.cc.UpdateReturning(scope, retScope, ByClauses(clauses))
-	return cmd.QueryRow(ctx, q, row)
+	return cmd.QueryRow(ctx, q, row, args...)
 }
 
 // DeleteByPK executes a hard DELETE for the row with the given primary key.
@@ -478,12 +499,18 @@ func (t *Table[T]) UpdateReturning(ctx context.Context, q QueryRowExecuter, row 
 //	tbl.DeleteByPK(ctx, dbw, id)
 //	// DELETE FROM tablename WHERE id=$1
 func (t *Table[T]) DeleteByPK(ctx context.Context, q Executer, pk any) (Result, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	return q.ExecContext(ctx, t.freqCmd.deleteByPK, pk)
 }
 
 // DeleteReturningByPK executes a hard DELETE by primary key and returns the
 // deleted row via RETURNING FullScope as a newly allocated *T.
 func (t *Table[T]) DeleteReturningByPK(ctx context.Context, q QueryRowExecuter, row *T) (*T, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	cmd := t.cc.DeleteReturning(FullScope, t.wherePkClause)
 	return cmd.QueryRow(ctx, q, row)
 }
@@ -510,6 +537,9 @@ func (t *Table[T]) DeleteReturning(ctx context.Context, q QueryRowExecuter, row 
 // WHERE condition. System "update" and "version" columns are also updated
 // automatically (e.g. updated_at, row_version).
 func (t *Table[T]) SoftDeleteByPK(ctx context.Context, q Executer, row *T) (Result, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	cmd := t.cc.Update(DeleteScope, ByPK())
 	return cmd.Exec(ctx, q, row)
 }
@@ -518,6 +548,9 @@ func (t *Table[T]) SoftDeleteByPK(ctx context.Context, q Executer, row *T) (Resu
 // all system-scope columns (version, insert, update, delete) from the updated
 // row as a newly allocated *T.
 func (t *Table[T]) SoftDeleteReturningByPK(ctx context.Context, q QueryRowExecuter, row *T) (*T, error) {
+	if t.pk == nil {
+		return nil, ErrNoPrimaryKey
+	}
 	return t.freqCmd.softDeleteByPK.QueryRow(ctx, q, row)
 }
 
@@ -535,6 +568,9 @@ func (t *Table[T]) Exist(ctx context.Context, q QueryRowExecuter, clauses string
 //	ok, err := tbl.ExistByPK(ctx, dbw, id)
 //	// SELECT EXISTS(SELECT 1 FROM tablename WHERE id=$1)
 func (t *Table[T]) ExistByPK(ctx context.Context, q QueryRowExecuter, pk any) (bool, error) {
+	if t.pk == nil {
+		return false, ErrNoPrimaryKey
+	}
 	return t.exist(ctx, q, ExistByPK, t.wherePkClause, pk)
 }
 

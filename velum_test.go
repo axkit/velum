@@ -15,7 +15,9 @@ import (
 	"github.com/axkit/velum/pgxw"
 	"github.com/axkit/velum/sqlw"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 func init() {
@@ -139,10 +141,16 @@ func startPostgresDB(t Helper) {
 	}
 
 	// Start a PostgreSQL container
+	// The image restarts PostgreSQL once after initdb: wait for the second
+	// "ready" line, otherwise the first connections are reset under load.
 	pgContainer, err = postgres.Run(ctx, "postgres:13-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("testuser"),
 		postgres.WithPassword("testpass"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(2*time.Minute)),
 	)
 	if err != nil {
 		t.Fatalf("failed to start PostgreSQL container: %v\n", err)
